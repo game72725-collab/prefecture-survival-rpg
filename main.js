@@ -62,7 +62,7 @@ const CONFIG = {
     walk:  { scale: 1.0,  yOffset: 0 },
     run:   { scale: 1.0,  yOffset: 0 },
     kayak: { scale: 1.3,  yOffset: 25 }, // 船が人物より大きいので、人物の頭の大きさが走りと揃うよう拡大＋座っている人が同じ高さに来るよう下げる
-    bike:  { scale: 1.0,  yOffset: 0 },  // 素材完成後に調整
+    bike:  { scale: 1.3,  yOffset: 25 }, // カヤックと同様、乗り物の縦幅が大きい素材のため拡大＋下寄せ
   },
   FOG_REVEAL_RADIUS_BASE_PX: 190, // 霧の解除半径（ズーム未適用の基準値。ワールドピクセル単位）
   PLAYER_SIZE: 100,        // 探検家の表示高さ(px)
