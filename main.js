@@ -53,8 +53,8 @@ const CONFIG = {
   ANIM_FRAME_MS_FOREST: 110, // 山歩行のコマ送り間隔
   ANIM_FRAME_MS_BIKE: 45,    // 自転車のコマ送り間隔（素材が無い間はランニング素材を高速コマ送り）
   ANIM_FRAME_MS_KAYAK: 90,   // カヤックのコマ送り間隔
-  BIKE_DURATION_SEC: 99,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
-  SPEED_CHEST_RATE: 1,    // 通常時、宝箱がスピードアップ宝箱になる確率
+  BIKE_DURATION_SEC: 10,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
+  SPEED_CHEST_RATE: 0.35,    // 通常時、宝箱がスピードアップ宝箱になる確率
   DEBUG_FORCE_ITEM: null,    // 'speed' にすると全宝箱がスピードアップ。null で通常（確率抽選）
   // シートごとの表示調整。scale＝PLAYER_SIZEに掛ける倍率、yOffset＝足元位置の下方向ずらし(px)。
   // 人物の大きさ・足元が歩き／走りとずれる素材はここで合わせる。
@@ -434,7 +434,8 @@ function draw(){
   // 文字列ベースのメッシュコード計算は使わず、起動時に作った整数グリッド(textureGrid)を直接参照する。
   // さらに、同じカテゴリが横方向に連続している区間はfillRectを1回にまとめ、描画コール数を減らす。
   if(textureGrid && (PATTERN_BUILDING || PATTERN_WATER || PATTERN_FOREST || PATTERN_RICEFIELD ||
-                      PATTERN_VEGGARDEN || PATTERN_WASTELAND || PATTERN_GOLF || PATTERN_BEACH)){
+                      PATTERN_VEGGARDEN || PATTERN_WASTELAND || PATTERN_GOLF || PATTERN_BEACH ||
+                      PATTERN_FACTORY || PATTERN_HOUSE || PATTERN_HOUSES || PATTERN_PARK)){
     ctx.save();
     ctx.translate(W/2 - pWX, H/2 - pWY); // これでローカル座標＝ワールド座標になり、パターンが世界に固定される
     const cellWpx = MESH_CELL_LON_DEG * PX_PER_DEG_LON, cellHpx = MESH_CELL_LAT_DEG * PX_PER_DEG_LAT;
@@ -446,16 +447,22 @@ function draw(){
     let colMax = Math.min(textureGridCols-1, Math.ceil((viewLonMax - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG));
     let rowMin = Math.max(0, Math.floor((viewLatMin - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG));
     let rowMax = Math.min(textureGridRows-1, Math.ceil((viewLatMax - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG));
+    // textureGrid値との対応はterrain.jsのbuildTextureGrid()コメント参照
+    // (1=高層建物,2=工場,3=低層建物,4=低層建物密集地,5=河川湖沼,6=森林,7=田,8=その他農地,9=荒地,10=ゴルフ場,11=海浜,12=公園緑地)
     const patternOf = (v)=>{
       switch(v){
         case 1: return PATTERN_BUILDING;
-        case 2: return PATTERN_WATER;
-        case 3: return PATTERN_FOREST;
-        case 4: return PATTERN_RICEFIELD;
-        case 5: return PATTERN_VEGGARDEN;
-        case 6: return PATTERN_WASTELAND;
-        case 7: return PATTERN_GOLF;
-        case 8: return PATTERN_BEACH;
+        case 2: return PATTERN_FACTORY;
+        case 3: return PATTERN_HOUSE;
+        case 4: return PATTERN_HOUSES;
+        case 5: return PATTERN_WATER;
+        case 6: return PATTERN_FOREST;
+        case 7: return PATTERN_RICEFIELD;
+        case 8: return PATTERN_VEGGARDEN;
+        case 9: return PATTERN_WASTELAND;
+        case 10: return PATTERN_GOLF;
+        case 11: return PATTERN_BEACH;
+        case 12: return PATTERN_PARK;
         default: return null;
       }
     };

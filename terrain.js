@@ -7,6 +7,7 @@ const TEXTURE_TILE_CELLS = 3; // 128pxのテクスチャ1枚を何メッシュ�
 let PATTERN_BUILDING = null, PATTERN_WATER = null, PATTERN_FOREST = null;
 let PATTERN_RICEFIELD = null, PATTERN_VEGGARDEN = null, PATTERN_WASTELAND = null,
     PATTERN_GOLF = null, PATTERN_BEACH = null;
+let PATTERN_FACTORY = null, PATTERN_HOUSE = null, PATTERN_HOUSES = null, PATTERN_PARK = null;
 function loadTexture(src, setPattern){
   const img = new Image();
   img.onload = ()=>{
@@ -32,14 +33,21 @@ loadTexture('vegetablegarden.webp', p=>{ PATTERN_VEGGARDEN = p; });
 loadTexture('wasteland.webp', p=>{ PATTERN_WASTELAND = p; });
 loadTexture('golf.webp', p=>{ PATTERN_GOLF = p; });
 loadTexture('beach.webp', p=>{ PATTERN_BEACH = p; });
+loadTexture('factory.webp', p=>{ PATTERN_FACTORY = p; });
+loadTexture('house.webp', p=>{ PATTERN_HOUSE = p; });
+loadTexture('houses.webp', p=>{ PATTERN_HOUSES = p; });
+loadTexture('park.webp', p=>{ PATTERN_PARK = p; });
 
 // 探検家・宝箱オープン演出は、実アルファ入りwebm動画から抽出したフレームを
 // 横一列に並べたスプライトシート（本物の透過PNG）として読み込み、Canvas上でコマ送り表示する。
 // これにより「透過」と「アニメーション」を両立できる（<img>重ね・mix-blend-modeは不要になった）。
-const LANDUSE_FOREST = '0500', LANDUSE_ROAD = '0901', LANDUSE_RAIL = '0902',
-      LANDUSE_RIVER = '1100', LANDUSE_BEACH = '1400', LANDUSE_SEA = '1500',
-      LANDUSE_BUILDING = '0700', LANDUSE_RICE = '0100', LANDUSE_OTHER_AGRI = '0200',
-      LANDUSE_WASTELAND = '0600', LANDUSE_GOLF = '1600';
+// 新カテゴリ番号（tokyo_landuse_2020_100m_integrated17.json準拠、17分類）
+// 1=田, 2=その他の農用地, 3=森林, 4=荒地, 5=高層建物, 6=工場, 7=低層建物, 8=低層建物（密集地）,
+// 9=道路, 10=鉄道, 11=公共施設等用地, 12=空地, 13=公園・緑地, 14=河川地及び湖沼, 15=海浜, 16=海水域, 17=ゴルフ場
+const LANDUSE_RICE = '1', LANDUSE_OTHER_AGRI = '2', LANDUSE_FOREST = '3', LANDUSE_WASTELAND = '4',
+      LANDUSE_HIGHRISE = '5', LANDUSE_FACTORY = '6', LANDUSE_LOWRISE = '7', LANDUSE_LOWRISE_DENSE = '8',
+      LANDUSE_ROAD = '9', LANDUSE_RAIL = '10', LANDUSE_PUBLIC = '11', LANDUSE_VACANT = '12',
+      LANDUSE_PARK = '13', LANDUSE_RIVER = '14', LANDUSE_BEACH = '15', LANDUSE_SEA = '16', LANDUSE_GOLF = '17';
 
 // [起点コードからの差分, 土地利用カテゴリのindex(LANDUSE_ORDER), 連続コマ数] の3つ組を繰り返すフラット配列
 function latLonToMeshCode(lat, lon){
@@ -132,19 +140,24 @@ const TEXTURE_GRID_LON0 = lonMin, TEXTURE_GRID_LAT0 = latMin;
 function buildTextureGrid(){
   textureGridCols = Math.ceil((lonMax - lonMin) / MESH_CELL_LON_DEG) + 2;
   textureGridRows = Math.ceil((latMax - latMin) / MESH_CELL_LAT_DEG) + 2;
-  // 0=対象外, 1=建物, 2=河川湖沼, 3=森林, 4=田, 5=その他農地, 6=荒地, 7=ゴルフ場, 8=海浜
+  // 0=対象外, 1=高層建物, 2=工場, 3=低層建物, 4=低層建物(密集地), 5=河川湖沼, 6=森林,
+  // 7=田, 8=その他農地, 9=荒地, 10=ゴルフ場, 11=海浜, 12=公園緑地
   textureGrid = new Uint8Array(textureGridCols * textureGridRows);
   meshLookup.forEach((landuseIdx, meshCode)=>{
     const code = LANDUSE_ORDER[landuseIdx];
     let v = 0;
-    if(code === LANDUSE_BUILDING) v = 1;
-    else if(code === LANDUSE_RIVER) v = 2;
-    else if(code === LANDUSE_FOREST) v = 3;
-    else if(code === LANDUSE_RICE) v = 4;
-    else if(code === LANDUSE_OTHER_AGRI) v = 5;
-    else if(code === LANDUSE_WASTELAND) v = 6;
-    else if(code === LANDUSE_GOLF) v = 7;
-    else if(code === LANDUSE_BEACH) v = 8;
+    if(code === LANDUSE_HIGHRISE) v = 1;
+    else if(code === LANDUSE_FACTORY) v = 2;
+    else if(code === LANDUSE_LOWRISE) v = 3;
+    else if(code === LANDUSE_LOWRISE_DENSE) v = 4;
+    else if(code === LANDUSE_RIVER) v = 5;
+    else if(code === LANDUSE_FOREST) v = 6;
+    else if(code === LANDUSE_RICE) v = 7;
+    else if(code === LANDUSE_OTHER_AGRI) v = 8;
+    else if(code === LANDUSE_WASTELAND) v = 9;
+    else if(code === LANDUSE_GOLF) v = 10;
+    else if(code === LANDUSE_BEACH) v = 11;
+    else if(code === LANDUSE_PARK) v = 12;
     if(v === 0) return;
     const [swLat, swLon] = meshCodeToSWLatLon(meshCode);
     const col = Math.round((swLon - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG);
