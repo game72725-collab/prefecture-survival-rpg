@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<title>都道府県サバイバルRPG（仮）Phase2B：東京都テスト</title>
+<style>
+  :root{ --bg:#1b2430; --ui:#0f1620; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
+  html, body {
+    margin:0; padding:0; height:100%;
+    background: var(--bg);
+    overscroll-behavior: none;
+    touch-action: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", "Yu Gothic", sans-serif;
+    color:#fff;
+  }
+  #app {
+    max-width: 480px; margin: 0 auto; height: 100vh; height: 100dvh;
+    display: flex; flex-direction: column; position: relative;
+  }
+  #hud {
+    background: var(--ui); padding: 10px 14px;
+    display:flex; justify-content:space-between; align-items:center;
+    font-weight:bold; font-size: 16px; border-bottom: 2px solid #000;
+  }
+  #timer.low { color: #ff5a5a; }
+  #canvasWrap { flex: 1; position: relative; overflow: hidden; background: #0d2436; }
+  canvas { display:block; width:100%; height:100%; }
+
+  #boostHud {
+    position:absolute; left:10px; top:10px; z-index:12; display:none; align-items:center; gap:6px;
+    background: rgba(15,22,32,0.85); border:1px solid #ffd93d; border-radius:10px; padding:6px 10px; font-size:14px;
+  }
+  #boostHud.show { display:flex; }
+  #boostBarWrap { width:70px; height:8px; background:#2b3644; border-radius:4px; overflow:hidden; }
+  #boostBar { height:100%; width:100%; background:#ffd93d; }
+  #boostSec { min-width:24px; font-variant-numeric: tabular-nums; }
+  #hintBanner {
+    position:absolute; left:10px; right:10px; bottom:10px;
+    background: rgba(15,22,32,0.92); border:1px solid #5ecb63;
+    border-radius: 10px; padding: 10px 12px; font-size: 13px; line-height:1.4;
+    display:none; z-index: 15;
+  }
+  #hintBanner.show { display:block; }
+  #hintBanner b { color:#5ecb63; }
+
+  #controls {
+    background: var(--ui); padding: 14px 14px calc(14px + env(safe-area-inset-bottom,0px));
+    display:flex; justify-content:center;
+  }
+  #dpad { width: 150px; height: 150px; position: relative; }
+  .dbtn {
+    position: absolute; width: 50px; height: 50px;
+    background: #3a4c60; border: 2px solid #566c85; border-radius: 10px;
+    display:flex; align-items:center; justify-content:center;
+    font-size: 22px; color:#fff; touch-action: none;
+  }
+  .dbtn:active, .dbtn.active { background: #5ecb63; }
+  #up { top:0; left:50px; } #down { top:100px; left:50px; }
+  #left { top:50px; left:0; } #right { top:50px; left:100px; }
+
+  .overlay {
+    position:absolute; inset:0; background: rgba(10,14,20,0.94);
+    display:none; flex-direction:column; align-items:center; justify-content:center;
+    padding: 24px; text-align:center; z-index: 20;
+  }
+  .overlay.show { display:flex; }
+  .overlay h1 { font-size: 30px; margin-bottom: 10px; }
+  .overlay p { opacity:0.8; margin-bottom: 18px; }
+  .bigbtn {
+    background: #5ecb63; color:#0f1620; border:none;
+    padding: 14px 26px; font-size: 17px; font-weight:bold; border-radius: 10px; margin-top: 10px;
+  }
+  #quizBox { width:100%; max-width: 380px; }
+  #quizBox h2 { font-size: 19px; margin-bottom: 18px; }
+  .quizOption {
+    display:block; width:100%; background:#3a4c60; border:2px solid #566c85; color:#fff;
+    padding: 14px; margin-bottom: 10px; border-radius: 10px; font-size: 15px; text-align:left;
+  }
+  .quizOption:active { background:#566c85; }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <div id="hud">
+    <div>⏱ <span id="timer">90</span>秒</div>
+    <div>📦 <span id="chestCount">0</span>/<span id="chestTotal">4</span></div>
+  </div>
+
+  <div id="canvasWrap">
+    <canvas id="game"></canvas>
+    <div id="boostHud"><span>👟</span><div id="boostBarWrap"><div id="boostBar"></div></div><span id="boostSec"></span></div>
+    <div id="hintBanner"></div>
+
+    <div id="quizOverlay" class="overlay">
+      <div id="quizBox">
+        <h2 id="quizQuestion">この県の特産品はどれ？（ダミー問題）</h2>
+        <div id="quizOptions"></div>
+      </div>
+    </div>
+    <div id="gameOverOverlay" class="overlay">
+      <h1>GAME OVER</h1>
+      <p>時間切れです。もう一度挑戦しますか？</p>
+      <button class="bigbtn" onclick="resetGame()">もう一度プレイ</button>
+    </div>
+    <div id="clearOverlay" class="overlay">
+      <h1>STAGE CLEAR!</h1>
+      <p>県庁クイズに正解しました。</p>
+      <button class="bigbtn" onclick="resetGame()">もう一度プレイ</button>
+    </div>
+    <div id="wrongToast" class="overlay" style="background:rgba(255,90,90,0.9); display:none;">
+      <h1>不正解！</h1>
+      <p>残り時間 -15秒</p>
+    </div>
+  </div>
+
+  <div id="controls">
+    <div id="dpad">
+      <div class="dbtn" id="up">▲</div>
+      <div class="dbtn" id="left">◀</div>
+      <div class="dbtn" id="right">▶</div>
+      <div class="dbtn" id="down">▼</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- 読み込み順が重要：ESモジュールは使わず通常のscriptタグで読み込む。
+     data_mesh.js/data_prefs.js（データ）→ main.js（CONFIG・canvas/ctx・ワールド座標・stateなどの土台）
+     → terrain.js → player.js → items.js → ui.js（ui.js末尾でinitGame()を呼んでゲームを開始する） -->
+<script src="data_mesh.js"></script>
+<script src="data_prefs.js"></script>
+<script src="main.js"></script>
+<script src="terrain.js"></script>
+<script src="player.js"></script>
+<script src="items.js"></script>
+<script src="ui.js"></script>
+
+</body>
+</html>
