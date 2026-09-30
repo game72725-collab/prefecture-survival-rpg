@@ -53,7 +53,7 @@ const CONFIG = {
   ANIM_FRAME_MS_FOREST: 110, // 山歩行のコマ送り間隔
   ANIM_FRAME_MS_BIKE: 45,    // 自転車のコマ送り間隔（素材が無い間はランニング素材を高速コマ送り）
   ANIM_FRAME_MS_KAYAK: 90,   // カヤックのコマ送り間隔
-  BIKE_DURATION_SEC: 10,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
+  BIKE_DURATION_SEC: 1000,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
   SPEED_CHEST_RATE: 0.35,    // 通常時、宝箱がスピードアップ宝箱になる確率
   DEBUG_FORCE_ITEM: null,    // 'speed' にすると全宝箱がスピードアップ。null で通常（確率抽選）
   // シートごとの表示調整。scale＝PLAYER_SIZEに掛ける倍率、yOffset＝足元位置の下方向ずらし(px)。
