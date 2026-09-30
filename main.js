@@ -53,7 +53,7 @@ const CONFIG = {
   ANIM_FRAME_MS_FOREST: 110, // 山歩行のコマ送り間隔
   ANIM_FRAME_MS_BIKE: 45,    // 自転車のコマ送り間隔（素材が無い間はランニング素材を高速コマ送り）
   ANIM_FRAME_MS_KAYAK: 90,   // カヤックのコマ送り間隔
-  BIKE_DURATION_SEC: 1000,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
+  BIKE_DURATION_SEC: 10,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
   SPEED_CHEST_RATE: 0.35,    // 通常時、宝箱がスピードアップ宝箱になる確率
   DEBUG_FORCE_ITEM: null,    // 'speed' にすると全宝箱がスピードアップ。null で通常（確率抽選）
   // シートごとの表示調整。scale＝PLAYER_SIZEに掛ける倍率、yOffset＝足元位置の下方向ずらし(px)。
@@ -217,7 +217,7 @@ function initGame(){
     spawn: { lat: spawn.lat, lon: spawn.lon },
     chests: [],
     boss: { lat: CAPITAL.lat, lon: CAPITAL.lon, sizePx: BOSS_SIZE_PX },
-    timeLeft: 1000,
+    timeLeft: 90,
     speedBoostUntil: 0, // スピードアップの終了時刻(performance.now基準)。0＝非発動
     running: true,
     mode: 'playing',
@@ -497,6 +497,14 @@ function draw(){
   ctx.strokeStyle = '#274a2b';
   ctx.lineWidth = 2;
   ctx.stroke();
+
+  // 鉄道路線（terrain.jsで起動時に1回だけ描画したcanvasを貼るだけ。地形テクスチャの上、宝箱・県庁・探検家より下）
+  if(railCanvas){
+    const railScreenX = W/2 + (railCanvasOriginX - pWX);
+    const railScreenY = H/2 + (railCanvasOriginY - pWY);
+    ctx.drawImage(railCanvas, railScreenX, railScreenY,
+                   railCanvas.width / RAIL_RASTER_SCALE, railCanvas.height / RAIL_RASTER_SCALE);
+  }
 
   // 宝箱
   const now = performance.now();

@@ -169,4 +169,66 @@ function buildTextureGrid(){
 }
 buildTextureGrid();
 
-// km <-> 度 の簡易換算
+// ==== 鉄道路線の描画（rail_data.js の RAIL_ROUTES を使用） ====
+// 路線はプレイヤー位置に関わらず変化しない静的情報なので、起動時に1回だけオフスクリーンcanvasへ描画し、
+// 毎フレームはそのcanvasをdrawImageで貼るだけにする（buildLanduseRasterと同じ考え方）。
+// 事業者種別(operatorType)：1=新幹線, 2=JR在来線, 3=公営鉄道, 4=民営鉄道, 5=第三セクター
+// （国土数値情報 N02 の値をこのデータで実際に確認済み。3〜5はすべて「私鉄」として扱う＝地下鉄含む）
+const RAIL_OPERATOR_SHINKANSEN = 1, RAIL_OPERATOR_JR = 2; // 3,4,5はまとめて私鉄
+
+const RAIL_RASTER_SCALE = 0.5; // ワールド座標に対する縮小率（線の描画なのでlanduseラスターより高めでも軽い）
+// 種別ごとの色・太さ（太さはワールドpx基準。ラスターへ描くときはRAIL_RASTER_SCALEを掛けて縮小する）
+const RAIL_STYLE = {
+  shinkansen: { color: '#ff3b30', width: 5 }, // 新幹線：太め、目立つ色
+  jr:         { color: '#0f7a3d', width: 3 }, // JR在来線：中間の太さ、JRらしい緑
+  private:    { color: '#8e5bc9', width: 2 }, // 私鉄（公営・民営・第三セクター、地下鉄含む）：やや細め、別の色
+};
+
+let railCanvas = null, railCanvasOriginX = 0, railCanvasOriginY = 0;
+function buildRailCanvas(){
+  if(typeof RAIL_ROUTES === 'undefined') return; // rail_data.js が読み込まれていない場合は何もしない
+
+  // 路線を3種類に分類
+  const byType = { shinkansen: [], jr: [], private: [] };
+  for(const route of RAIL_ROUTES){
+    if(route.operatorType === RAIL_OPERATOR_SHINKANSEN) byType.shinkansen.push(route);
+    else if(route.operatorType === RAIL_OPERATOR_JR) byType.jr.push(route);
+    else byType.private.push(route); // 3(公営)/4(民営)/5(第三セクター) はすべて私鉄扱い（地下鉄含む）
+
+  }
+
+  // 東京都のワールド座標bbox（landuseラスターと同じ範囲）にオフスクリーンcanvasを用意
+  const originX = worldMinX, originY = worldMinY;
+  const w = Math.ceil(WORLD_W * RAIL_RASTER_SCALE) + 2;
+  const h = Math.ceil(WORLD_H * RAIL_RASTER_SCALE) + 2;
+  const rc = document.createElement('canvas');
+  rc.width = w; rc.height = h;
+  const rctx = rc.getContext('2d');
+  rctx.lineCap = 'round';
+  rctx.lineJoin = 'round';
+
+  function drawRoutes(routes, style){
+    rctx.strokeStyle = style.color;
+    rctx.lineWidth = Math.max(1, style.width * RAIL_RASTER_SCALE);
+    for(const route of routes){
+      const coords = route.coords;
+      if(!coords || coords.length < 2) continue;
+      rctx.beginPath();
+      for(let i=0; i<coords.length; i++){
+        const lat = coords[i][0], lon = coords[i][1]; // rail_data.jsの座標は[lat,lon]の順
+        const rx = (worldX(lon) - originX) * RAIL_RASTER_SCALE;
+        const ry = (worldY(lat) - originY) * RAIL_RASTER_SCALE;
+        if(i===0) rctx.moveTo(rx, ry); else rctx.lineTo(rx, ry);
+      }
+      rctx.stroke();
+    }
+  }
+  // 重ね順：私鉄→JR在来線→新幹線の順に描き、主要な路線ほど上に来るようにする
+  drawRoutes(byType.private, RAIL_STYLE.private);
+  drawRoutes(byType.jr, RAIL_STYLE.jr);
+  drawRoutes(byType.shinkansen, RAIL_STYLE.shinkansen);
+
+  railCanvas = rc;
+  railCanvasOriginX = originX; railCanvasOriginY = originY;
+}
+buildRailCanvas();
