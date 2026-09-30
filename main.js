@@ -217,7 +217,7 @@ function initGame(){
     spawn: { lat: spawn.lat, lon: spawn.lon },
     chests: [],
     boss: { lat: CAPITAL.lat, lon: CAPITAL.lon, sizePx: BOSS_SIZE_PX },
-    timeLeft: 90,
+    timeLeft: 1000,
     speedBoostUntil: 0, // スピードアップの終了時刻(performance.now基準)。0＝非発動
     running: true,
     mode: 'playing',
