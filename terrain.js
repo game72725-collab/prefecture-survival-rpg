@@ -239,7 +239,7 @@ buildRailCanvas();
 // オフスクリーンcanvasへ描画し、毎フレームはそのcanvasをdrawImageで貼るだけにする。
 // 色は、地形テクスチャの水面（PATTERN_WATER）や各RAIL_STYLEの色と衝突しないよう、
 // 白に近い薄い水色（#cdeef7）を採用した。太さはJR在来線(3)よりやや細い2.5。
-const RIVER_STYLE = { color: '#cdeef7', width: 2.5 };
+const RIVER_STYLE = { color: '#3bb0d9', width: 2.5 };
 const RIVER_RASTER_SCALE = 0.5; // 鉄道と同じ縮小率
 
 let riverCanvas = null, riverCanvasOriginX = 0, riverCanvasOriginY = 0;
