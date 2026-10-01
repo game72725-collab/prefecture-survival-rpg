@@ -498,6 +498,15 @@ function draw(){
   ctx.lineWidth = 2;
   ctx.stroke();
 
+  // 河川（terrain.jsで起動時に1回だけ描画したcanvasを貼るだけ。地形テクスチャの上、鉄道より下）
+  // 鉄道と全く同じ仕組み・同じズーム変換ブロック内で描くので、ズームしても地形・鉄道・河川が常に一致する。
+  if(riverCanvas){
+    const riverScreenX = W/2 + (riverCanvasOriginX - pWX);
+    const riverScreenY = H/2 + (riverCanvasOriginY - pWY);
+    ctx.drawImage(riverCanvas, riverScreenX, riverScreenY,
+                   riverCanvas.width / RIVER_RASTER_SCALE, riverCanvas.height / RIVER_RASTER_SCALE);
+  }
+
   // 鉄道路線（terrain.jsで起動時に1回だけ描画したcanvasを貼るだけ。地形テクスチャの上、宝箱・県庁・探検家より下）
   if(railCanvas){
     const railScreenX = W/2 + (railCanvasOriginX - pWX);

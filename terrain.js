@@ -232,3 +232,46 @@ function buildRailCanvas(){
   railCanvasOriginX = originX; railCanvasOriginY = originY;
 }
 buildRailCanvas();
+
+
+// ==== 河川の描画（river_data.js の riverData を使用） ====
+// 鉄道と全く同じ考え方：プレイヤー位置に関わらず変化しない静的情報なので、起動時に1回だけ
+// オフスクリーンcanvasへ描画し、毎フレームはそのcanvasをdrawImageで貼るだけにする。
+// 色は、地形テクスチャの水面（PATTERN_WATER）や各RAIL_STYLEの色と衝突しないよう、
+// 白に近い薄い水色（#cdeef7）を採用した。太さはJR在来線(3)よりやや細い2.5。
+const RIVER_STYLE = { color: '#cdeef7', width: 2.5 };
+const RIVER_RASTER_SCALE = 0.5; // 鉄道と同じ縮小率
+
+let riverCanvas = null, riverCanvasOriginX = 0, riverCanvasOriginY = 0;
+function buildRiverCanvas(){
+  if(typeof riverData === 'undefined') return; // river_data.js が読み込まれていない場合は何もしない
+
+  // 東京都のワールド座標bbox（鉄道ラスターと同じ範囲・同じ原点）にオフスクリーンcanvasを用意
+  const originX = worldMinX, originY = worldMinY;
+  const w = Math.ceil(WORLD_W * RIVER_RASTER_SCALE) + 2;
+  const h = Math.ceil(WORLD_H * RIVER_RASTER_SCALE) + 2;
+  const rc = document.createElement('canvas');
+  rc.width = w; rc.height = h;
+  const rctx = rc.getContext('2d');
+  rctx.lineCap = 'round';
+  rctx.lineJoin = 'round';
+  rctx.strokeStyle = RIVER_STYLE.color;
+  rctx.lineWidth = Math.max(1, RIVER_STYLE.width * RIVER_RASTER_SCALE);
+
+  for(const river of riverData){
+    const coords = river.coords;
+    if(!coords || coords.length < 2) continue;
+    rctx.beginPath();
+    for(let i=0; i<coords.length; i++){
+      const lat = coords[i][0], lon = coords[i][1]; // river_data.jsの座標は[lat,lon]の順（鉄道データと同じ）
+      const rx = (worldX(lon) - originX) * RIVER_RASTER_SCALE;
+      const ry = (worldY(lat) - originY) * RIVER_RASTER_SCALE;
+      if(i===0) rctx.moveTo(rx, ry); else rctx.lineTo(rx, ry);
+    }
+    rctx.stroke();
+  }
+
+  riverCanvas = rc;
+  riverCanvasOriginX = originX; riverCanvasOriginY = originY;
+}
+buildRiverCanvas();

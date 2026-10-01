@@ -128,11 +128,12 @@
 </div>
 
 <!-- 読み込み順が重要：ESモジュールは使わず通常のscriptタグで読み込む。
-     data_mesh.js/data_prefs.js/rail_data.js（データ）→ main.js（CONFIG・canvas/ctx・ワールド座標・stateなどの土台）
-     → terrain.js（鉄道路線の事前描画もここ）→ player.js → items.js → ui.js（ui.js末尾でinitGame()を呼んでゲームを開始する） -->
+     data_mesh.js/data_prefs.js/rail_data.js/river_data.js（データ）→ main.js（CONFIG・canvas/ctx・ワールド座標・stateなどの土台）
+     → terrain.js（鉄道路線・河川の事前描画もここ）→ player.js → items.js → ui.js（ui.js末尾でinitGame()を呼んでゲームを開始する） -->
 <script src="data_mesh.js"></script>
 <script src="data_prefs.js"></script>
 <script src="rail_data.js"></script>
+<script src="river_data.js"></script>
 <script src="main.js"></script>
 <script src="terrain.js"></script>
 <script src="player.js"></script>
