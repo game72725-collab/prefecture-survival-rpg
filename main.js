@@ -422,15 +422,69 @@ function draw(){
   });
   ctx.closePath();
   ctx.clip();
-  // テクスチャ入りラスターが焼き上がっていればそちらを、まだなら単色ラスターをdrawImageで貼るだけ。
-  // パターンの塗り分け自体は起動時に1回（terrain.jsのbakeTexturedRaster）で完了しており、
-  // 鉄道・河川のcanvasと同じく、ここでは完成済みのcanvasを貼るだけで毎フレームの負荷はない。
-  const rasterToDraw = texturedLanduseRasterCanvas || landuseRasterCanvas;
-  if(rasterToDraw){
+  if(landuseRasterCanvas){
     const rasterOriginScreenX = W/2 + (landuseRasterOriginX - pWX);
     const rasterOriginScreenY = H/2 + (landuseRasterOriginY - pWY);
-    ctx.drawImage(rasterToDraw, rasterOriginScreenX, rasterOriginScreenY,
-                   rasterToDraw.width / LANDUSE_RASTER_SCALE, rasterToDraw.height / LANDUSE_RASTER_SCALE);
+    ctx.drawImage(landuseRasterCanvas, rasterOriginScreenX, rasterOriginScreenY,
+                   landuseRasterCanvas.width / LANDUSE_RASTER_SCALE, landuseRasterCanvas.height / LANDUSE_RASTER_SCALE);
+  }
+  // 建物用地・河川湖沼・森林・田・その他農地・荒地・ゴルフ場・海浜は、事前ラスターの単色の上から
+  // 「ワールド座標に固定したテクスチャ」を画面に映っているセル分だけその場で重ね塗りする
+  // （パターンの位相が世界座標基準で揃うため継ぎ目が出ない）。
+  // 文字列ベースのメッシュコード計算は使わず、起動時に作った整数グリッド(textureGrid)を直接参照する。
+  // さらに、同じカテゴリが横方向に連続している区間はfillRectを1回にまとめ、描画コール数を減らす。
+  if(textureGrid && (PATTERN_BUILDING || PATTERN_WATER || PATTERN_FOREST || PATTERN_RICEFIELD ||
+                      PATTERN_VEGGARDEN || PATTERN_WASTELAND || PATTERN_GOLF || PATTERN_BEACH ||
+                      PATTERN_FACTORY || PATTERN_HOUSE || PATTERN_HOUSES || PATTERN_PARK)){
+    ctx.save();
+    ctx.translate(W/2 - pWX, H/2 - pWY); // これでローカル座標＝ワールド座標になり、パターンが世界に固定される
+    const cellWpx = MESH_CELL_LON_DEG * PX_PER_DEG_LON, cellHpx = MESH_CELL_LAT_DEG * PX_PER_DEG_LAT;
+    const viewLonMin = REF_LON + (pWX - W/(2*z) - cellWpx) / PX_PER_DEG_LON;
+    const viewLonMax = REF_LON + (pWX + W/(2*z) + cellWpx) / PX_PER_DEG_LON;
+    const viewLatMax = REF_LAT - (pWY - H/(2*z) - cellHpx) / PX_PER_DEG_LAT;
+    const viewLatMin = REF_LAT - (pWY + H/(2*z) + cellHpx) / PX_PER_DEG_LAT;
+    let colMin = Math.max(0, Math.floor((viewLonMin - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG));
+    let colMax = Math.min(textureGridCols-1, Math.ceil((viewLonMax - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG));
+    let rowMin = Math.max(0, Math.floor((viewLatMin - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG));
+    let rowMax = Math.min(textureGridRows-1, Math.ceil((viewLatMax - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG));
+    // textureGrid値との対応はterrain.jsのbuildTextureGrid()コメント参照
+    // (1=高層建物,2=工場,3=低層建物,4=低層建物密集地,5=河川湖沼,6=森林,7=田,8=その他農地,9=荒地,10=ゴルフ場,11=海浜,12=公園緑地)
+    const patternOf = (v)=>{
+      switch(v){
+        case 1: return PATTERN_BUILDING;
+        case 2: return PATTERN_FACTORY;
+        case 3: return PATTERN_HOUSE;
+        case 4: return PATTERN_HOUSES;
+        case 5: return PATTERN_WATER;
+        case 6: return PATTERN_FOREST;
+        case 7: return PATTERN_RICEFIELD;
+        case 8: return PATTERN_VEGGARDEN;
+        case 9: return PATTERN_WASTELAND;
+        case 10: return PATTERN_GOLF;
+        case 11: return PATTERN_BEACH;
+        case 12: return PATTERN_PARK;
+        default: return null;
+      }
+    };
+    for(let row=rowMin; row<=rowMax; row++){
+      const base = row*textureGridCols;
+      const wy = worldY(TEXTURE_GRID_LAT0 + row*MESH_CELL_LAT_DEG);
+      let runStartCol = colMin, runVal = textureGrid[base+colMin];
+      for(let col=colMin+1; col<=colMax+1; col++){
+        const v = (col<=colMax) ? textureGrid[base+col] : -1; // 番兵：行の最後で必ずflushする
+        if(v !== runVal){
+          const pattern = patternOf(runVal);
+          if(pattern){
+            const wxStart = worldX(TEXTURE_GRID_LON0 + runStartCol*MESH_CELL_LON_DEG);
+            const widthPx = (col - runStartCol) * cellWpx;
+            ctx.fillStyle = pattern;
+            ctx.fillRect(wxStart - cellWpx/2, wy - cellHpx/2, widthPx*1.02, cellHpx*1.02); // 継ぎ目防止に少しだけ重ねる
+          }
+          runStartCol = col; runVal = v;
+        }
+      }
+    }
+    ctx.restore();
   }
   ctx.restore();
   // 東京都の輪郭線

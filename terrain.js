@@ -8,16 +8,8 @@ let PATTERN_BUILDING = null, PATTERN_WATER = null, PATTERN_FOREST = null;
 let PATTERN_RICEFIELD = null, PATTERN_VEGGARDEN = null, PATTERN_WASTELAND = null,
     PATTERN_GOLF = null, PATTERN_BEACH = null;
 let PATTERN_FACTORY = null, PATTERN_HOUSE = null, PATTERN_HOUSES = null, PATTERN_PARK = null;
-// 12種（building/water/forest/ricefield/vegetablegarden/wasteland/golf/beach/factory/house/houses/park）
-// すべての読み込みが「成功・失敗を問わず」決着した時点で、1回だけテクスチャ入りラスターを焼く。
-const TEXTURE_LOAD_TOTAL = 12;
-let textureLoadsSettled = 0;
 function loadTexture(src, setPattern){
   const img = new Image();
-  function settled(){
-    textureLoadsSettled++;
-    if(textureLoadsSettled === TEXTURE_LOAD_TOTAL) bakeTexturedRaster();
-  }
   img.onload = ()=>{
     try {
       const pattern = ctx.createPattern(img, 'repeat');
@@ -28,9 +20,8 @@ function loadTexture(src, setPattern){
       pattern.setTransform(new DOMMatrix([scaleX, 0, 0, scaleY, 0, 0]));
       setPattern(pattern);
     } catch(e){ /* createPattern失敗時は何もしない＝下地のラスター単色のまま表示される */ }
-    settled();
   };
-  img.onerror = ()=>{ settled(); /* 読み込み失敗時は単色フォールバックのまま（このテクスチャだけ焼き込まれない） */ };
+  img.onerror = ()=>{ /* 読み込み失敗時も同様に単色フォールバックのまま */ };
   img.src = src;
 }
 // ctx（canvasコンテキスト）はこの後で定義されるが、画像読み込みは非同期なのでonload発火時には定義済みになる
@@ -178,65 +169,6 @@ function buildTextureGrid(){
 }
 buildTextureGrid();
 
-// ==== テクスチャ入りラスターの焼き込み（全テクスチャの読み込みが決着した時点で1回だけ実行） ====
-// 従来は毎フレーム「単色ラスター＋パターンのランレングス塗り」をdraw()内で行っていたが、
-// パターン塗り自体は一度焼いてしまえば以後は不変なので、起動直後の1回だけ実行し、
-// 以後は鉄道・河川のcanvasと同じく、焼き上がったcanvasをdrawImageで貼るだけにする。
-let texturedLanduseRasterCanvas = null; // 焼き込み完了後にこちらへ差し替わる（未完了の間はnullのまま）
-function bakeTexturedRaster(){
-  if(!landuseRasterCanvas || !textureGrid) return; // 念のための安全弁（実ブラウザでは起こらない）
-  const tc = document.createElement('canvas');
-  tc.width = landuseRasterCanvas.width; tc.height = landuseRasterCanvas.height;
-  const tctx = tc.getContext('2d');
-  tctx.drawImage(landuseRasterCanvas, 0, 0); // まず単色ラスターをそのままコピー（下地）
-
-  // ラスターcanvas上で「ローカル座標＝ワールド座標」になるよう変形してから、
-  // 従来main.js側で毎フレーム行っていたのと同じランレングス塗りを、画面全体ではなく
-  // ラスター全域（textureGridの全行・全列）に対して1回だけ実行する。
-  tctx.save();
-  tctx.scale(LANDUSE_RASTER_SCALE, LANDUSE_RASTER_SCALE);
-  tctx.translate(-landuseRasterOriginX, -landuseRasterOriginY);
-  const cellWpx = MESH_CELL_LON_DEG * PX_PER_DEG_LON, cellHpx = MESH_CELL_LAT_DEG * PX_PER_DEG_LAT;
-  // textureGrid値との対応 (1=高層建物,2=工場,3=低層建物,4=低層建物密集地,5=河川湖沼,6=森林,7=田,8=その他農地,9=荒地,10=ゴルフ場,11=海浜,12=公園緑地)
-  const patternOf = (v)=>{
-    switch(v){
-      case 1: return PATTERN_BUILDING;
-      case 2: return PATTERN_FACTORY;
-      case 3: return PATTERN_HOUSE;
-      case 4: return PATTERN_HOUSES;
-      case 5: return PATTERN_WATER;
-      case 6: return PATTERN_FOREST;
-      case 7: return PATTERN_RICEFIELD;
-      case 8: return PATTERN_VEGGARDEN;
-      case 9: return PATTERN_WASTELAND;
-      case 10: return PATTERN_GOLF;
-      case 11: return PATTERN_BEACH;
-      case 12: return PATTERN_PARK;
-      default: return null;
-    }
-  };
-  for(let row=0; row<textureGridRows; row++){
-    const base = row*textureGridCols;
-    const wy = worldY(TEXTURE_GRID_LAT0 + row*MESH_CELL_LAT_DEG);
-    let runStartCol = 0, runVal = textureGrid[base];
-    for(let col=1; col<=textureGridCols; col++){
-      const v = (col<textureGridCols) ? textureGrid[base+col] : -1; // 番兵：行の最後で必ずflushする
-      if(v !== runVal){
-        const pattern = patternOf(runVal);
-        if(pattern){
-          const wxStart = worldX(TEXTURE_GRID_LON0 + runStartCol*MESH_CELL_LON_DEG);
-          const widthPx = (col - runStartCol) * cellWpx;
-          tctx.fillStyle = pattern;
-          tctx.fillRect(wxStart - cellWpx/2, wy - cellHpx/2, widthPx*1.02, cellHpx*1.02); // 継ぎ目防止に少しだけ重ねる
-        }
-        runStartCol = col; runVal = v;
-      }
-    }
-  }
-  tctx.restore();
-  texturedLanduseRasterCanvas = tc;
-}
-
 // ==== 鉄道路線の描画（rail_data.js の RAIL_ROUTES を使用） ====
 // 路線はプレイヤー位置に関わらず変化しない静的情報なので、起動時に1回だけオフスクリーンcanvasへ描画し、
 // 毎フレームはそのcanvasをdrawImageで貼るだけにする（buildLanduseRasterと同じ考え方）。
@@ -307,7 +239,7 @@ buildRailCanvas();
 // オフスクリーンcanvasへ描画し、毎フレームはそのcanvasをdrawImageで貼るだけにする。
 // 色は、地形テクスチャの水面（PATTERN_WATER）や各RAIL_STYLEの色と衝突しないよう、
 // 白に近い薄い水色（#cdeef7）を採用した。太さはJR在来線(3)よりやや細い2.5。
-const RIVER_STYLE = { color: '#3bb0d9', width };
+const RIVER_STYLE = { color: '#cdeef7', width: 2.5 };
 const RIVER_RASTER_SCALE = 0.5; // 鉄道と同じ縮小率
 
 let riverCanvas = null, riverCanvasOriginX = 0, riverCanvasOriginY = 0;
