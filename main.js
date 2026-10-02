@@ -433,7 +433,7 @@ function draw(){
   // （パターンの位相が世界座標基準で揃うため継ぎ目が出ない）。
   // 文字列ベースのメッシュコード計算は使わず、起動時に作った整数グリッド(textureGrid)を直接参照する。
   // さらに、同じカテゴリが横方向に連続している区間はfillRectを1回にまとめ、描画コール数を減らす。
-  if(textureGrid && (PATTERN_BUILDING || PATTERN_WATER || PATTERN_FOREST || PATTERN_RICEFIELD ||
+  if(toggleTexture.checked && textureGrid && (PATTERN_BUILDING || PATTERN_WATER || PATTERN_FOREST || PATTERN_RICEFIELD ||
                       PATTERN_VEGGARDEN || PATTERN_WASTELAND || PATTERN_GOLF || PATTERN_BEACH ||
                       PATTERN_FACTORY || PATTERN_HOUSE || PATTERN_HOUSES || PATTERN_PARK)){
     ctx.save();
@@ -500,7 +500,7 @@ function draw(){
 
   // 河川（terrain.jsで起動時に1回だけ描画したcanvasを貼るだけ。地形テクスチャの上、鉄道より下）
   // 鉄道と全く同じ仕組み・同じズーム変換ブロック内で描くので、ズームしても地形・鉄道・河川が常に一致する。
-  if(riverCanvas){
+  if(riverCanvas && toggleRiver.checked){
     const riverScreenX = W/2 + (riverCanvasOriginX - pWX);
     const riverScreenY = H/2 + (riverCanvasOriginY - pWY);
     ctx.drawImage(riverCanvas, riverScreenX, riverScreenY,
@@ -508,7 +508,7 @@ function draw(){
   }
 
   // 鉄道路線（terrain.jsで起動時に1回だけ描画したcanvasを貼るだけ。地形テクスチャの上、宝箱・県庁・探検家より下）
-  if(railCanvas){
+  if(railCanvas && toggleRail.checked){
     const railScreenX = W/2 + (railCanvasOriginX - pWX);
     const railScreenY = H/2 + (railCanvasOriginY - pWY);
     ctx.drawImage(railCanvas, railScreenX, railScreenY,

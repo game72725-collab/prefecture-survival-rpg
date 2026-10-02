@@ -10,6 +10,12 @@ const dummyQuizzes = [
 const NEAR_HINTS = ["小さいヒント：この地域の人口は約1,400万人（ダミー）", "小さいヒント：海に面したエリアがある（ダミー）"];
 const FAR_HINTS = ["大きいヒント：特産品はキャベツと言われている（ダミー）", "大きいヒント：都道府県庁所在地の名前に「京」の字が入る（ダミー）"];
 
+// レイヤー表示切り替え（地形テクスチャ／鉄道／河川）。見た目のon/offだけで、当たり判定・速度には一切関与しない。
+// draw()（main.js）がこれらの.checkedを毎フレーム直接参照する。初期状態はHTML側でchecked（すべてオン）。
+const toggleTexture = document.getElementById('toggleTexture');
+const toggleRail = document.getElementById('toggleRail');
+const toggleRiver = document.getElementById('toggleRiver');
+
 function hideAllOverlays(){
   quizOverlay.classList.remove('show');
   gameOverOverlay.classList.remove('show');
