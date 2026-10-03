@@ -208,7 +208,7 @@ function initGame(){
   initFogMask();
 
   // ① スポーン地点：県庁から直線距離1〜3km圏内のランダムな地点
-  const spawnDist = randRange(20, 50);
+  const spawnDist = randRange(20, 30);
   const spawnAngle = randRange(0, Math.PI*2);
   const spawn = offsetLatLon(CAPITAL.lat, CAPITAL.lon, spawnDist, spawnAngle);
 
