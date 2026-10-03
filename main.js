@@ -433,23 +433,32 @@ function draw(){
   // （パターンの位相が世界座標基準で揃うため継ぎ目が出ない）。
   // 文字列ベースのメッシュコード計算は使わず、起動時に作った整数グリッド(textureGrid)を直接参照する。
   // さらに、同じカテゴリが横方向に連続している区間はfillRectを1回にまとめ、描画コール数を減らす。
-  if(toggleTexture.checked && textureGrid && (PATTERN_BUILDING || PATTERN_WATER || PATTERN_FOREST || PATTERN_RICEFIELD ||
-                      PATTERN_VEGGARDEN || PATTERN_WASTELAND || PATTERN_GOLF || PATTERN_BEACH ||
-                      PATTERN_FACTORY || PATTERN_HOUSE || PATTERN_HOUSES || PATTERN_PARK)){
-    ctx.save();
-    ctx.translate(W/2 - pWX, H/2 - pWY); // これでローカル座標＝ワールド座標になり、パターンが世界に固定される
-    const cellWpx = MESH_CELL_LON_DEG * PX_PER_DEG_LON, cellHpx = MESH_CELL_LAT_DEG * PX_PER_DEG_LAT;
-    const viewLonMin = REF_LON + (pWX - W/(2*z) - cellWpx) / PX_PER_DEG_LON;
-    const viewLonMax = REF_LON + (pWX + W/(2*z) + cellWpx) / PX_PER_DEG_LON;
-    const viewLatMax = REF_LAT - (pWY - H/(2*z) - cellHpx) / PX_PER_DEG_LAT;
-    const viewLatMin = REF_LAT - (pWY + H/(2*z) + cellHpx) / PX_PER_DEG_LAT;
-    let colMin = Math.max(0, Math.floor((viewLonMin - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG));
-    let colMax = Math.min(textureGridCols-1, Math.ceil((viewLonMax - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG));
-    let rowMin = Math.max(0, Math.floor((viewLatMin - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG));
-    let rowMax = Math.min(textureGridRows-1, Math.ceil((viewLatMax - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG));
+  //if(toggleTexture.checked && textureGrid && (PATTERN_BUILDING || PATTERN_WATER || PATTERN_FOREST || PATTERN_RICEFIELD ||
+  //                    PATTERN_VEGGARDEN || PATTERN_WASTELAND || PATTERN_GOLF || PATTERN_BEACH ||
+  //                    PATTERN_FACTORY || PATTERN_HOUSE || PATTERN_HOUSES || PATTERN_PARK)){
+  //  ctx.save();
+  //  ctx.translate(W/2 - pWX, H/2 - pWY); // これでローカル座標＝ワールド座標になり、パターンが世界に固定される
+  //  const cellWpx = MESH_CELL_LON_DEG * PX_PER_DEG_LON, cellHpx = MESH_CELL_LAT_DEG * PX_PER_DEG_LAT;
+  //  const viewLonMin = REF_LON + (pWX - W/(2*z) - cellWpx) / PX_PER_DEG_LON;
+  //  const viewLonMax = REF_LON + (pWX + W/(2*z) + cellWpx) / PX_PER_DEG_LON;
+  //  const viewLatMax = REF_LAT - (pWY - H/(2*z) - cellHpx) / PX_PER_DEG_LAT;
+  //  const viewLatMin = REF_LAT - (pWY + H/(2*z) + cellHpx) / PX_PER_DEG_LAT;
+  //  let colMin = Math.max(0, Math.floor((viewLonMin - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG));
+  //  let colMax = Math.min(textureGridCols-1, Math.ceil((viewLonMax - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG));
+  //  let rowMin = Math.max(0, Math.floor((viewLatMin - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG));
+  //  let rowMax = Math.min(textureGridRows-1, Math.ceil((viewLatMax - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG));
     // textureGrid値との対応はterrain.jsのbuildTextureGrid()コメント参照
     // (1=高層建物,2=工場,3=低層建物,4=低層建物密集地,5=河川湖沼,6=森林,7=田,8=その他農地,9=荒地,10=ゴルフ場,11=海浜,12=公園緑地)
-    const patternOf = (v)=>{
+  if(toggleTexture.checked && texturedLanduseRasterCanvas){
+    drawStaticLayerCropped(
+        texturedLanduseRasterCanvas,
+        texturedLanduseRasterOriginX,
+        texturedLanduseRasterOriginY,
+        TEXTURED_LANDUSE_RASTER_SCALE
+    );
+  }  
+  
+  const patternOf = (v)=>{
       switch(v){
         case 1: return PATTERN_BUILDING;
         case 2: return PATTERN_FACTORY;
