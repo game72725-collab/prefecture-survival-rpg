@@ -458,43 +458,43 @@ function draw(){
     );
   }  
   
-  const patternOf = (v)=>{
-      switch(v){
-        case 1: return PATTERN_BUILDING;
-        case 2: return PATTERN_FACTORY;
-        case 3: return PATTERN_HOUSE;
-        case 4: return PATTERN_HOUSES;
-        case 5: return PATTERN_WATER;
-        case 6: return PATTERN_FOREST;
-        case 7: return PATTERN_RICEFIELD;
-        case 8: return PATTERN_VEGGARDEN;
-        case 9: return PATTERN_WASTELAND;
-        case 10: return PATTERN_GOLF;
-        case 11: return PATTERN_BEACH;
-        case 12: return PATTERN_PARK;
-        default: return null;
-      }
-    };
-    for(let row=rowMin; row<=rowMax; row++){
-      const base = row*textureGridCols;
-      const wy = worldY(TEXTURE_GRID_LAT0 + row*MESH_CELL_LAT_DEG);
-      let runStartCol = colMin, runVal = textureGrid[base+colMin];
-      for(let col=colMin+1; col<=colMax+1; col++){
-        const v = (col<=colMax) ? textureGrid[base+col] : -1; // 番兵：行の最後で必ずflushする
-        if(v !== runVal){
-          const pattern = patternOf(runVal);
-          if(pattern){
-            const wxStart = worldX(TEXTURE_GRID_LON0 + runStartCol*MESH_CELL_LON_DEG);
-            const widthPx = (col - runStartCol) * cellWpx;
-            ctx.fillStyle = pattern;
-            ctx.fillRect(wxStart - cellWpx/2, wy - cellHpx/2, widthPx*1.02, cellHpx*1.02); // 継ぎ目防止に少しだけ重ねる
-          }
-          runStartCol = col; runVal = v;
-        }
-      }
-    }
-    ctx.restore();
-  }
+  //const patternOf = (v)=>{
+  //   switch(v){
+  //      case 1: return PATTERN_BUILDING;
+ //       case 2: return PATTERN_FACTORY;
+  //      case 3: return PATTERN_HOUSE;
+   //     case 4: return PATTERN_HOUSES;
+     //   case 5: return PATTERN_WATER;
+    //    case 6: return PATTERN_FOREST;
+     //   case 7: return PATTERN_RICEFIELD;
+    //    case 8: return PATTERN_VEGGARDEN;
+    //    case 9: return PATTERN_WASTELAND;
+   //     case 10: return PATTERN_GOLF;
+    //    case 11: return PATTERN_BEACH;
+    //    case 12: return PATTERN_PARK;
+     //   default: return null;
+   //   }
+  //  };
+   // for(let row=rowMin; row<=rowMax; row++){
+  //    const base = row*textureGridCols;
+    //  const wy = worldY(TEXTURE_GRID_LAT0 + row*MESH_CELL_LAT_DEG);
+     // let runStartCol = colMin, runVal = textureGrid[base+colMin];
+    //  for(let col=colMin+1; col<=colMax+1; col++){
+     //   const v = (col<=colMax) ? textureGrid[base+col] : -1; // 番兵：行の最後で必ずflushする
+     //   if(v !== runVal){
+      //    const pattern = patternOf(runVal);
+      //    if(pattern){
+       //     const wxStart = worldX(TEXTURE_GRID_LON0 + runStartCol*MESH_CELL_LON_DEG);
+         //   const widthPx = (col - runStartCol) * cellWpx;
+       //     ctx.fillStyle = pattern;
+       //     ctx.fillRect(wxStart - cellWpx/2, wy - cellHpx/2, widthPx*1.02, cellHpx*1.02); // 継ぎ目防止に少しだけ重ねる
+        //  }
+        //  runStartCol = col; runVal = v;
+       // }
+    //  }
+  //  }
+  //  ctx.restore();
+ // }
   ctx.restore();
   // 東京都の輪郭線
   ctx.beginPath();
