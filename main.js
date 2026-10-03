@@ -424,25 +424,23 @@ function draw(){
   ctx.clip();
   // テクスチャONなら焼き付け済みラスターを使い、未生成・描画失敗時は通常ラスターへ戻す。
   let rasterDrawn = false;
-  if(toggleTexture.checked && typeof texturedLanduseRasterCanvas !== 'undefined' && texturedLanduseRasterCanvas){
-    try {
-      const rasterOriginScreenX = W/2 + (texturedLanduseRasterOriginX - pWX);
-      const rasterOriginScreenY = H/2 + (texturedLanduseRasterOriginY - pWY);
-      ctx.drawImage(
-        texturedLanduseRasterCanvas,
-        rasterOriginScreenX,
-        rasterOriginScreenY,
-        texturedLanduseRasterCanvas.width / TEXTURED_LANDUSE_RASTER_SCALE,
-        texturedLanduseRasterCanvas.height / TEXTURED_LANDUSE_RASTER_SCALE
-      );
-      rasterDrawn = true;
-    } catch(e) {
-      rasterDrawn = false;
-    }
-  }
-  if(!rasterDrawn && landuseRasterCanvas){
+  if(toggleTexture.checked && texturedLanduseRasterCanvas){
+  try {
+    const rasterOriginScreenX = W/2 + (texturedLanduseRasterOriginX - pWX);
+    const rasterOriginScreenY = H/2 + (texturedLanduseRasterOriginY - pWY);
+
+    ctx.drawImage(
+      texturedLanduseRasterCanvas,
+      rasterOriginScreenX,
+      rasterOriginScreenY,
+      texturedLanduseRasterCanvas.width / TEXTURED_LANDUSE_RASTER_SCALE,
+      texturedLanduseRasterCanvas.height / TEXTURED_LANDUSE_RASTER_SCALE
+    );
+  } catch(e) {
+    // テクスチャ描画に失敗した場合は通常ラスターを表示
     const rasterOriginScreenX = W/2 + (landuseRasterOriginX - pWX);
     const rasterOriginScreenY = H/2 + (landuseRasterOriginY - pWY);
+
     ctx.drawImage(
       landuseRasterCanvas,
       rasterOriginScreenX,
@@ -451,6 +449,7 @@ function draw(){
       landuseRasterCanvas.height / LANDUSE_RASTER_SCALE
     );
   }
+}
   ctx.restore();
   // 東京都の輪郭線
   ctx.beginPath();
