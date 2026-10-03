@@ -191,11 +191,17 @@ function tryBuildTexturedLanduseRaster(){
   texturedLanduseRasterBuildStarted = true;
   try {
     const rc = document.createElement('canvas');
-    rc.width = landuseRasterCanvas.width;
-    rc.height = landuseRasterCanvas.height;
+    rc.width = Math.ceil(landuseRasterCanvas.width / LANDUSE_RASTER_SCALE);
+    rc.height = Math.ceil(landuseRasterCanvas.height / LANDUSE_RASTER_SCALE);
     const rctx = rc.getContext('2d');
     // 画像未読込・読込失敗カテゴリがあっても、単色の土地利用地図を維持する。
-    rctx.drawImage(landuseRasterCanvas, 0, 0);
+    rctx.drawImage(
+    landuseRasterCanvas,
+    0,
+    0,
+    landuseRasterCanvas.width / LANDUSE_RASTER_SCALE,
+    landuseRasterCanvas.height / LANDUSE_RASTER_SCALE
+    );
 
     const patternForFile = Object.create(null);
     for(const src of [
