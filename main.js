@@ -423,139 +423,29 @@ function draw(){
   ctx.closePath();
   ctx.clip();
   if(landuseRasterCanvas){
-    const rasterOriginScreenX = W/2 + (landuseRasterOriginX - pWX);
-    const rasterOriginScreenY = H/2 + (landuseRasterOriginY - pWY);
-    ctx.drawImage(landuseRasterCanvas, rasterOriginScreenX, rasterOriginScreenY,
-                   landuseRasterCanvas.width / LANDUSE_RASTER_SCALE, landuseRasterCanvas.height / LANDUSE_RASTER_SCALE);
-  }
-    // 地形テクスチャ
-  // terrain.jsで作成済みのtextureGridとPATTERN_*を使用する。
-  // 100mメッシュの単色ラスターの上に、該当カテゴリだけテクスチャを重ねる。
-  if(toggleTexture.checked && textureGrid){
-
-    const patternOf = (v)=>{
-      switch(v){
-        case 1:  return PATTERN_BUILDING;     // 高層建物
-        case 2:  return PATTERN_FACTORY;      // 工場
-        case 3:  return PATTERN_HOUSE;        // 低層建物
-        case 4:  return PATTERN_HOUSES;       // 低層建物（密集地）
-        case 5:  return PATTERN_WATER;        // 河川湖沼
-        case 6:  return PATTERN_FOREST;       // 森林
-        case 7:  return PATTERN_RICEFIELD;    // 田
-        case 8:  return PATTERN_VEGGARDEN;    // その他農地
-        case 9:  return PATTERN_WASTELAND;    // 荒地
-        case 10: return PATTERN_GOLF;         // ゴルフ場
-        case 11: return PATTERN_BEACH;        // 海浜
-        case 12: return PATTERN_PARK;         // 公園緑地
-        default: return null;
-      }
-    };
-
-    ctx.save();
-
-    // パターンの位置をワールド座標に固定する
-    ctx.translate(W/2 - pWX, H/2 - pWY);
-
-    const cellWpx = MESH_CELL_LON_DEG * PX_PER_DEG_LON;
-    const cellHpx = MESH_CELL_LAT_DEG * PX_PER_DEG_LAT;
-
-    // 現在画面に入っている範囲だけ描画する
-    const viewLonMin =
-      REF_LON + (pWX - W/(2*z) - cellWpx) / PX_PER_DEG_LON;
-
-    const viewLonMax =
-      REF_LON + (pWX + W/(2*z) + cellWpx) / PX_PER_DEG_LON;
-
-    const viewLatMax =
-      REF_LAT - (pWY - H/(2*z) - cellHpx) / PX_PER_DEG_LAT;
-
-    const viewLatMin =
-      REF_LAT - (pWY + H/(2*z) + cellHpx) / PX_PER_DEG_LAT;
-
-    let colMin = Math.max(
-      0,
-      Math.floor(
-        (viewLonMin - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG
-      )
-    );
-
-    let colMax = Math.min(
-      textureGridCols - 1,
-      Math.ceil(
-        (viewLonMax - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG
-      )
-    );
-
-    let rowMin = Math.max(
-      0,
-      Math.floor(
-        (viewLatMin - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG
-      )
-    );
-
-    let rowMax = Math.min(
-      textureGridRows - 1,
-      Math.ceil(
-        (viewLatMax - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG
-      )
-    );
-
-    // 東京の範囲からはみ出さないよう、既存のTOKYO_RINGクリップを利用
-    // 同じテクスチャが横方向に連続している部分は1回のfillRectにまとめる。
-    for(let row = rowMin; row <= rowMax; row++){
-
-      const base = row * textureGridCols;
-
-      const wy =
-        worldY(
-          TEXTURE_GRID_LAT0 +
-          row * MESH_CELL_LAT_DEG
-        );
-
-      let runStartCol = colMin;
-      let runVal = textureGrid[base + colMin];
-
-      for(let col = colMin + 1; col <= colMax + 1; col++){
-
-        const v =
-          (col <= colMax)
-            ? textureGrid[base + col]
-            : -1;
-
-        if(v !== runVal){
-
-          const pattern = patternOf(runVal);
-
-          if(pattern){
-
-            const wxStart =
-              worldX(
-                TEXTURE_GRID_LON0 +
-                runStartCol * MESH_CELL_LON_DEG
-              );
-
-            const widthPx =
-              (col - runStartCol) * cellWpx;
-
-            ctx.fillStyle = pattern;
-
-            // 100mメッシュの隙間を防ぐため少しだけ重ねる
-            ctx.fillRect(
-              wxStart - cellWpx / 2,
-              wy - cellHpx / 2,
-              widthPx * 1.02,
-              cellHpx * 1.02
-            );
-          }
-
-          runStartCol = col;
-          runVal = v;
-        }
+    let textureDrawn = false;
+    if(toggleTexture.checked && typeof texturedLanduseRasterCanvas !== 'undefined' && texturedLanduseRasterCanvas){
+      try {
+        const rasterOriginScreenX = W/2 + (texturedLanduseRasterOriginX - pWX);
+        const rasterOriginScreenY = H/2 + (texturedLanduseRasterOriginY - pWY);
+        ctx.drawImage(texturedLanduseRasterCanvas, rasterOriginScreenX, rasterOriginScreenY,
+                      texturedLanduseRasterCanvas.width / TEXTURED_LANDUSE_RASTER_SCALE,
+                      texturedLanduseRasterCanvas.height / TEXTURED_LANDUSE_RASTER_SCALE);
+        textureDrawn = true;
+      } catch(e) {
+        // 焼き込みCanvasの描画に失敗した場合は下の単色ラスターへフォールバック
       }
     }
-
-    ctx.restore();
+    if(!textureDrawn){
+      const rasterOriginScreenX = W/2 + (landuseRasterOriginX - pWX);
+      const rasterOriginScreenY = H/2 + (landuseRasterOriginY - pWY);
+      ctx.drawImage(landuseRasterCanvas, rasterOriginScreenX, rasterOriginScreenY,
+                    landuseRasterCanvas.width / LANDUSE_RASTER_SCALE,
+                    landuseRasterCanvas.height / LANDUSE_RASTER_SCALE);
+    }
   }
+  ctx.restore();
+ // }
   ctx.restore();
   // 東京都の輪郭線
   ctx.beginPath();
