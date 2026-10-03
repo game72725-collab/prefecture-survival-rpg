@@ -498,21 +498,47 @@ function draw(){
   ctx.lineWidth = 2;
   ctx.stroke();
 
+  // 河川・鉄道：画面に実際に映っている範囲だけをcanvasから切り取って貼る（9引数のdrawImage）。
+  // 全体を毎フレーム貼っていた以前の方式より、ズームして画面範囲が小さい時に特に軽くなる。
+  const VIEWPORT_MARGIN_WORLD_PX = 120; // 画面端で地形が一瞬見切れないよう、少し広めに切り取る余白
+  function drawStaticLayerCropped(sourceCanvas, originX, originY, rasterScale){
+    // 現在のプレイヤー位置・ズーム倍率から、画面に映っているワールド座標の範囲を求める
+    const halfWWorld = W/(2*z) + VIEWPORT_MARGIN_WORLD_PX;
+    const halfHWorld = H/(2*z) + VIEWPORT_MARGIN_WORLD_PX;
+    let wx0 = pWX - halfWWorld, wx1 = pWX + halfWWorld;
+    let wy0 = pWY - halfHWorld, wy1 = pWY + halfHWorld;
+
+    // ワールド座標 → このcanvas上のピクセル座標（切り取る矩形 sx,sy,sw,sh）に変換
+    let sx = (wx0 - originX) * rasterScale;
+    let sy = (wy0 - originY) * rasterScale;
+    let sw = (wx1 - wx0) * rasterScale;
+    let sh = (wy1 - wy0) * rasterScale;
+
+    // canvasの実サイズをはみ出さないようクランプ（はみ出した分は幅・高さ側に反映する）
+    if(sx < 0){ sw += sx; sx = 0; }
+    if(sy < 0){ sh += sy; sy = 0; }
+    if(sx + sw > sourceCanvas.width) sw = sourceCanvas.width - sx;
+    if(sy + sh > sourceCanvas.height) sh = sourceCanvas.height - sy;
+    if(sw <= 0 || sh <= 0) return; // 画面内にこのレイヤーが全く無い（通常は起こらない）
+
+    // クランプ後のsx,sy,sw,shから、対応する貼り付け先（画面側）の位置・サイズを逆算する
+    const cwx0 = sx / rasterScale + originX, cwx1 = (sx+sw) / rasterScale + originX;
+    const cwy0 = sy / rasterScale + originY, cwy1 = (sy+sh) / rasterScale + originY;
+    const dx = W/2 + (cwx0 - pWX), dy = H/2 + (cwy0 - pWY);
+    const dWidth = cwx1 - cwx0, dHeight = cwy1 - cwy0;
+
+    ctx.drawImage(sourceCanvas, sx, sy, sw, sh, dx, dy, dWidth, dHeight);
+  }
+
   // 河川（terrain.jsで起動時に1回だけ描画したcanvasを貼るだけ。地形テクスチャの上、鉄道より下）
   // 鉄道と全く同じ仕組み・同じズーム変換ブロック内で描くので、ズームしても地形・鉄道・河川が常に一致する。
   if(riverCanvas && toggleRiver.checked){
-    const riverScreenX = W/2 + (riverCanvasOriginX - pWX);
-    const riverScreenY = H/2 + (riverCanvasOriginY - pWY);
-    ctx.drawImage(riverCanvas, riverScreenX, riverScreenY,
-                   riverCanvas.width / RIVER_RASTER_SCALE, riverCanvas.height / RIVER_RASTER_SCALE);
+    drawStaticLayerCropped(riverCanvas, riverCanvasOriginX, riverCanvasOriginY, RIVER_RASTER_SCALE);
   }
 
   // 鉄道路線（terrain.jsで起動時に1回だけ描画したcanvasを貼るだけ。地形テクスチャの上、宝箱・県庁・探検家より下）
   if(railCanvas && toggleRail.checked){
-    const railScreenX = W/2 + (railCanvasOriginX - pWX);
-    const railScreenY = H/2 + (railCanvasOriginY - pWY);
-    ctx.drawImage(railCanvas, railScreenX, railScreenY,
-                   railCanvas.width / RAIL_RASTER_SCALE, railCanvas.height / RAIL_RASTER_SCALE);
+    drawStaticLayerCropped(railCanvas, railCanvasOriginX, railCanvasOriginY, RAIL_RASTER_SCALE);
   }
 
   // 宝箱
