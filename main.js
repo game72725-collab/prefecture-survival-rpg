@@ -449,14 +449,14 @@ function draw(){
   //  let rowMax = Math.min(textureGridRows-1, Math.ceil((viewLatMax - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG));
     // textureGrid値との対応はterrain.jsのbuildTextureGrid()コメント参照
     // (1=高層建物,2=工場,3=低層建物,4=低層建物密集地,5=河川湖沼,6=森林,7=田,8=その他農地,9=荒地,10=ゴルフ場,11=海浜,12=公園緑地)
-  if(toggleTexture.checked && texturedLanduseRasterCanvas){
-    drawStaticLayerCropped(
-        texturedLanduseRasterCanvas,
-        texturedLanduseRasterOriginX,
-        texturedLanduseRasterOriginY,
-        TEXTURED_LANDUSE_RASTER_SCALE
-    );
-  }  
+  //if(toggleTexture.checked && texturedLanduseRasterCanvas){
+    //drawStaticLayerCropped(
+     //   texturedLanduseRasterCanvas,
+      //  texturedLanduseRasterOriginX,
+     //   texturedLanduseRasterOriginY,
+      //  TEXTURED_LANDUSE_RASTER_SCALE
+    //);
+ // }  
   
   //const patternOf = (v)=>{
   //   switch(v){
