@@ -181,7 +181,7 @@ buildTextureGrid();
 // ==== テクスチャ付き土地利用ラスターを起動時に一度だけ焼き付ける ==== 
 // 元の土地利用ラスターを下地にコピーし、対応カテゴリだけテクスチャを重ねる。
 // 以後の毎フレーム処理は main.js の drawImage だけになる。
-const TEXTURED_LANDUSE_RASTER_SCALE = LANDUSE_RASTER_SCALE;
+const TEXTURED_LANDUSE_RASTER_SCALE = 1.0;
 let texturedLanduseRasterCanvas = null;
 let texturedLanduseRasterOriginX = 0, texturedLanduseRasterOriginY = 0;
 let texturedLanduseRasterBuildStarted = false;
