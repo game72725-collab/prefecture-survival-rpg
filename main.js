@@ -66,7 +66,7 @@ const CONFIG = {
   },
   FOG_REVEAL_RADIUS_BASE_PX: 190, // 霧の解除半径（ズーム未適用の基準値。ワールドピクセル単位）
   PLAYER_SIZE: 100,        // 探検家の表示高さ(px)
-  CHEST_SIZE: 100,          // 宝箱（未開封）の表示高さ(px)。開封中はこの1.15倍を使用
+  CHEST_SIZE: 60,          // 宝箱（未開封）の表示高さ(px)。開封中はこの1.15倍を使用
   CAPITAL_SIZE: 100,       // 県庁の表示高さ(px)
   CAMERA_ZOOM_MIN: 1.0,    // ピンチズームの下限（初期表示＝1.0。これより引くことはできない）
   CAMERA_ZOOM_MAX: 3.5,    // ピンチズームの上限（拡大側）
@@ -208,7 +208,7 @@ function initGame(){
   initFogMask();
 
   // ① スポーン地点：県庁から直線距離1〜3km圏内のランダムな地点
-  const spawnDist = randRange(20, 30);
+  const spawnDist = randRange(1, 3);
   const spawnAngle = randRange(0, Math.PI*2);
   const spawn = offsetLatLon(CAPITAL.lat, CAPITAL.lon, spawnDist, spawnAngle);
 
@@ -422,25 +422,30 @@ function draw(){
   });
   ctx.closePath();
   ctx.clip();
-  // テクスチャONなら焼き付け済みラスターを使い、未生成・描画失敗時は通常ラスターへ戻す。
+  // テクスチャONなら焼き付け済みラスターを使い、未生成（読み込み中）・OFF・描画失敗時は通常ラスターへ戻す。
+  // ここが今回のバグ：texturedLanduseRasterCanvasが無い場合（テクスチャOFF時・焼き込み完了前）に
+  // どちらのdrawImageも呼ばれず、下地が全く描かれていなかった。rasterDrawnで確実にフォールバックする。
   let rasterDrawn = false;
   if(toggleTexture.checked && texturedLanduseRasterCanvas){
-  try {
-    const rasterOriginScreenX = W/2 + (texturedLanduseRasterOriginX - pWX);
-    const rasterOriginScreenY = H/2 + (texturedLanduseRasterOriginY - pWY);
-
-    ctx.drawImage(
-      texturedLanduseRasterCanvas,
-      rasterOriginScreenX,
-      rasterOriginScreenY,
-      texturedLanduseRasterCanvas.width / TEXTURED_LANDUSE_RASTER_SCALE,
-      texturedLanduseRasterCanvas.height / TEXTURED_LANDUSE_RASTER_SCALE
-    );
-  } catch(e) {
-    // テクスチャ描画に失敗した場合は通常ラスターを表示
+    try {
+      const rasterOriginScreenX = W/2 + (texturedLanduseRasterOriginX - pWX);
+      const rasterOriginScreenY = H/2 + (texturedLanduseRasterOriginY - pWY);
+      ctx.drawImage(
+        texturedLanduseRasterCanvas,
+        rasterOriginScreenX,
+        rasterOriginScreenY,
+        texturedLanduseRasterCanvas.width / TEXTURED_LANDUSE_RASTER_SCALE,
+        texturedLanduseRasterCanvas.height / TEXTURED_LANDUSE_RASTER_SCALE
+      );
+      rasterDrawn = true;
+    } catch(e) {
+      rasterDrawn = false; // 下のフォールバックに任せる
+    }
+  }
+  if(!rasterDrawn && landuseRasterCanvas){
+    // テクスチャOFF、まだ焼き込みが終わっていない、または上で失敗した場合はここで必ず単色ラスターを描く
     const rasterOriginScreenX = W/2 + (landuseRasterOriginX - pWX);
     const rasterOriginScreenY = H/2 + (landuseRasterOriginY - pWY);
-
     ctx.drawImage(
       landuseRasterCanvas,
       rasterOriginScreenX,
@@ -449,7 +454,6 @@ function draw(){
       landuseRasterCanvas.height / LANDUSE_RASTER_SCALE
     );
   }
-}
   ctx.restore();
   // 東京都の輪郭線
   ctx.beginPath();
