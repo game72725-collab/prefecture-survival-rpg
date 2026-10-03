@@ -66,7 +66,7 @@ const CONFIG = {
   },
   FOG_REVEAL_RADIUS_BASE_PX: 190, // 霧の解除半径（ズーム未適用の基準値。ワールドピクセル単位）
   PLAYER_SIZE: 100,        // 探検家の表示高さ(px)
-  CHEST_SIZE: 60,          // 宝箱（未開封）の表示高さ(px)。開封中はこの1.15倍を使用
+  CHEST_SIZE: 100,          // 宝箱（未開封）の表示高さ(px)。開封中はこの1.15倍を使用
   CAPITAL_SIZE: 100,       // 県庁の表示高さ(px)
   CAMERA_ZOOM_MIN: 1.0,    // ピンチズームの下限（初期表示＝1.0。これより引くことはできない）
   CAMERA_ZOOM_MAX: 3.5,    // ピンチズームの上限（拡大側）
@@ -208,7 +208,7 @@ function initGame(){
   initFogMask();
 
   // ① スポーン地点：県庁から直線距離1〜3km圏内のランダムな地点
-  const spawnDist = randRange(1, 3);
+  const spawnDist = randRange(20, 50);
   const spawnAngle = randRange(0, Math.PI*2);
   const spawn = offsetLatLon(CAPITAL.lat, CAPITAL.lon, spawnDist, spawnAngle);
 
