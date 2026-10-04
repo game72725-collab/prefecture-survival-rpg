@@ -56,6 +56,12 @@ const CONFIG = {
   BIKE_DURATION_SEC: 10,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
   SPEED_CHEST_RATE: 0.35,    // 通常時、宝箱がスピードアップ宝箱になる確率
   DEBUG_FORCE_ITEM: null,    // 'speed' にすると全宝箱がスピードアップ。null で通常（確率抽選）
+  // ---- ヒント掲示板 ----
+  HINT_BOARD_COUNT: 4,       // ステージ開始時に置く掲示板の数。旧ヒント宝箱は「近距離2＋遠距離1〜2＝3〜4個」だったため最大の4に合わせた。有効な問題数がこれより少なければ問題数に合わせる
+  HINT_BOARD_SIZE: 60,       // 掲示板の表示高さ(px)
+  HINT_BOARD_DIST_MIN_KM: 0.15, HINT_BOARD_DIST_MAX_KM: 3.0, // スポーン地点からの配置距離(km)。旧・近距離枠(0.15〜0.9)と遠距離枠(1.2〜3.0)を、区別なしの1範囲に統合
+  HINT_PANEL_SEC: 8,         // ヒント表示パネルが自動で閉じるまでの秒数（タップでも閉じる）
+  DEBUG_FIFTY_FIFTY_STOCK: 0, // 動作確認用：ラン開始時の✂️50-50の所持数（通常は0。宝箱からの入手は未実装）
   // シートごとの表示調整。scale＝PLAYER_SIZEに掛ける倍率、yOffset＝足元位置の下方向ずらし(px)。
   // 人物の大きさ・足元が歩き／走りとずれる素材はここで合わせる。
   SHEET_ADJUST: {
@@ -181,6 +187,15 @@ const CHEST_OPEN_ANIM_MS = CHEST_OPEN_FRAME_MS * 9; // 9コマ分
 let state = {};
 
 function randRange(min, max){ return Math.random() * (max - min) + min; }
+// Fisher-Yatesシャッフル。元の配列は書き換えず、シャッフル済みの新しい配列を返す
+function shuffleArray(arr){
+  const a = arr.slice();
+  for(let i = a.length - 1; i > 0; i--){
+    const j = Math.floor(Math.random() * (i + 1));
+    const t = a[i]; a[i] = a[j]; a[j] = t;
+  }
+  return a;
+}
 function distPx(ax, ay, bx, by){ return Math.hypot(ax-bx, ay-by); }
 function clampToBounds(lat, lon){
   return {
@@ -231,7 +246,13 @@ function initGame(){
     speedBoostUntil: 0, // スピードアップの終了時刻(performance.now基準)。0＝非発動
     running: true,
     mode: 'playing',
-    quizStep: 0
+    quizStep: 0,
+    hintBoards: [],        // ヒント掲示板（placeHintBoards）
+    readHintIds: new Set(), // 今回のランで掲示板から読んだ問題ID（ラン開始ごとにリセット）
+    askedIds: new Set(),    // 今回のランでボス戦に出題済みの問題ID（ラン開始ごとにリセット）
+    lastAskedId: null,      // 直前に出題した問題ID
+    currentQuiz: null,      // 出題中の問題（シャッフル後の選択肢・正解文字列など）
+    fiftyFiftyStock: CONFIG.DEBUG_FIFTY_FIFTY_STOCK // ✂️50-50の所持数
   };
 
   // ⑤ 宝箱：スポーン地点からの距離で「近距離枠」「遠距離枠」を分けて配置
@@ -241,18 +262,22 @@ function initGame(){
     const d = randRange(0.15, 0.9);
     const a = randRange(0, Math.PI*2);
     const p = offsetLatLon(spawn.lat, spawn.lon, d, a);
-    state.chests.push({ lat:p.lat, lon:p.lon, category:'near', item: pickChestItem(), hint: NEAR_HINTS[i % NEAR_HINTS.length], state:'closed', openStart:0 });
+    state.chests.push({ lat:p.lat, lon:p.lon, category:'near', item: pickChestItem(), state:'closed', openStart:0 });
   }
   for(let i=0;i<FAR_COUNT;i++){
     const d = randRange(1.2, 3.0);
     const a = randRange(0, Math.PI*2);
     const p = offsetLatLon(spawn.lat, spawn.lon, d, a);
-    state.chests.push({ lat:p.lat, lon:p.lon, category:'far', item: pickChestItem(), hint: FAR_HINTS[i % FAR_HINTS.length], state:'closed', openStart:0 });
+    state.chests.push({ lat:p.lat, lon:p.lon, category:'far', item: pickChestItem(), state:'closed', openStart:0 });
   }
   chestTotalEl.textContent = state.chests.length;
   chestCountEl.textContent = 0;
 
+  // ヒント掲示板：ナレッジ（有効な問題）から重複なしでN問を選び、1問につき1つ配置（items.js）
+  state.hintBoards = placeHintBoards(spawn);
+
   hideAllOverlays();
+  resetHintUI(); // ヒントのパネル／一覧／ボタン表示を初期状態へ（ui.js）
   boostHud.classList.remove('show');
   revealFogAt(worldX(spawn.lon), worldY(spawn.lat)); // スポーン地点周辺は最初から視界を確保
   lastTime = performance.now();
@@ -379,13 +404,16 @@ function update(dt){
       chestCountEl.textContent = opened;
       if(c.item === 'speed'){
         activateSpeedBoost(); // 取得した瞬間に自動発動
-        showHint('👟 スピードアップ発動！<br>' + c.hint);
+        showItemMessage('👟 スピードアップ発動！');
       } else {
         state.timeLeft += 10;
-        showHint(c.hint);
+        showItemMessage('⏱ 残り時間 +10秒');
       }
     }
   });
+
+  // ヒント掲示板の取得判定（触れたら問題のhintを表示し、掲示板は消える）
+  checkHintBoardPickup(pWX, pWY);
 
   // 県庁到達判定
   const bWX = worldX(state.boss.lon), bWY = worldY(state.boss.lat);
@@ -544,6 +572,9 @@ function draw(){
     }
   });
 
+  // ヒント掲示板（宝箱と県庁の間の重ね順）
+  drawHintBoards(toScreen);
+
   // 県庁（③ 霧が晴れていない場所ではこの後の霧オーバーレイで自然に隠れる）
   {
     const [sx, sy] = toScreen(worldX(state.boss.lon), worldY(state.boss.lat));
@@ -596,6 +627,53 @@ function endGame(won){
 }
 
 window.resetGame = function(){ initGame(); };
+
+// ==== 県ナレッジ（data/pref<XX>/knowledge_<XX>.js の KNOWLEDGE_<XX>） ====
+// ボス戦クイズとヒント掲示板の元データ。1問 = { id, question, options(4つ), answer("0"〜"3"), hint }。
+// answer は次の2形式のどちらでも受け付ける（どちらも最終的に「正解の選択肢の文字列」に変換して判定する）：
+//   ・"0"〜"3"：正解の選択肢のインデックス（文字列）
+//   ・正解の選択肢そのものの文字列（options のどれかと完全一致）。添付の knowledge_13.js はこの形式（全問、先頭の選択肢が正解）
+// いずれも正解が先頭に固定されたデータなので、出題時に必ず選択肢をシャッフルし、正誤は「正解の選択肢の文字列」で判定する（ui.js）。
+let currentKnowledge = []; // 検証を通った問題だけが入る（loadPrefectureData()完了時に setCurrentKnowledge() が設定）
+function knowledgeProblem(q, seenIds){
+  if(!q || typeof q !== 'object') return '問題オブジェクトではない';
+  if(typeof q.id !== 'string' || !q.id) return 'idがない';
+  if(seenIds.has(q.id)) return 'idが重複している';
+  if(typeof q.question !== 'string' || !q.question) return 'questionがない';
+  if(typeof q.hint !== 'string' || !q.hint) return 'hintがない';
+  if(!Array.isArray(q.options) || q.options.length !== 4) return 'optionsが4つではない';
+  if(!q.options.every(o => typeof o === 'string' && o)) return 'optionsに空または文字列でない要素がある';
+  if(new Set(q.options).size !== q.options.length) return 'optionsに重複がある';
+  if(typeof q.answer !== 'string' || (!['0','1','2','3'].includes(q.answer) && !q.options.includes(q.answer))){
+    return 'answerが"0"〜"3"でも、optionsのどれかと一致する文字列でもない';
+  }
+  return null;
+}
+// 検証済みの問題から「正解の選択肢の文字列」を取り出す（answerが"0"〜"3"ならそのインデックスの選択肢、それ以外はanswer自体）
+function knowledgeCorrectText(q){
+  return ['0','1','2','3'].includes(q.answer) ? q.options[Number(q.answer)] : q.answer;
+}
+// 各問を検証し、問題のあるものは console.warn を出してその問題だけスキップする（ゲーム全体は止めない）
+function validateKnowledge(raw, xx){
+  const valid = [], seenIds = new Set();
+  if(!Array.isArray(raw)) return valid;
+  raw.forEach((q, i)=>{
+    const reason = knowledgeProblem(q, seenIds);
+    if(reason){
+      console.warn('[knowledge] KNOWLEDGE_' + xx + '[' + i + ']' + (q && q.id ? '(id=' + q.id + ')' : '') + ' をスキップ: ' + reason);
+      return;
+    }
+    seenIds.add(q.id);
+    valid.push(q);
+  });
+  return valid;
+}
+// 検証済みの問題を currentKnowledge に格納し、有効な問題数を返す
+function setCurrentKnowledge(prefCode, raw){
+  const xx = String(prefCode).padStart(2, '0');
+  currentKnowledge = validateKnowledge(raw, xx);
+  return currentKnowledge.length;
+}
 
 // ==== ゲーム開始（県データの動的読み込み完了後に、index.htmlから1回だけ呼ばれる） ====
 // 県データ（TOKYO_RING・MESH_RUNS_FLAT・RAIL_ROUTES・riverData 等）が必要な「1回だけの重い初期化」をここに集約。

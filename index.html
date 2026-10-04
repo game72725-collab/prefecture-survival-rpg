@@ -53,6 +53,35 @@
   #hintBanner.show { display:block; }
   #hintBanner b { color:#5ecb63; }
 
+  /* ヒント掲示板を読んだ時の半透明パネル（操作・タイマーは止めない。タップか一定時間で閉じる） */
+  #hintPanel {
+    position:absolute; left:10px; right:10px; bottom:66px; max-height:32%; overflow-y:auto;
+    background: rgba(15,22,32,0.74); border:1px solid #ffd93d; border-radius:10px;
+    padding: 9px 12px; font-size: 13px; line-height:1.5; display:none; z-index: 16;
+  }
+  #hintPanel.show { display:block; }
+  #hintPanel b { color:#ffd93d; }
+  #hintPanelNote { display:block; margin-top:4px; font-size:10px; opacity:0.6; }
+
+  /* ヒント一覧（HUDのボタンから開く。独立した機能なので不要なら下のCSSとHTMLごと削除可） */
+  #hintListBtn {
+    background:#3a4c60; border:1px solid #566c85; color:#fff; border-radius:8px;
+    padding:4px 10px; font-size:13px; font-weight:bold;
+  }
+  #hintListBtn:active { background:#566c85; }
+  #hintListPanel {
+    position:absolute; left:10px; right:10px; top:8px; max-height:62%; overflow-y:auto;
+    background: rgba(15,22,32,0.9); border:1px solid #566c85; border-radius:10px;
+    padding: 10px 12px; font-size: 13px; line-height:1.5; display:none; z-index: 17;
+  }
+  #hintListPanel.show { display:block; }
+  #hintListPanel h3 { margin:0 0 6px; font-size:14px; color:#ffd93d; }
+  .hintListItem { padding:6px 0; border-top:1px solid rgba(255,255,255,0.12); }
+  #hintListClose {
+    display:block; margin:8px auto 0; background:#3a4c60; border:1px solid #566c85; color:#fff;
+    border-radius:8px; padding:6px 22px; font-size:13px;
+  }
+
   #controls {
     background: var(--ui); padding: 14px 14px calc(14px + env(safe-area-inset-bottom,0px));
     display:flex; justify-content:center;
@@ -87,6 +116,10 @@
     padding: 14px; margin-bottom: 10px; border-radius: 10px; font-size: 15px; text-align:left;
   }
   .quizOption:active { background:#566c85; }
+  #fiftyFiftyBtn {
+    display:none; width:100%; background:#3a4c60; border:2px solid #ffd93d; color:#ffd93d;
+    padding: 10px; margin-top: 4px; border-radius: 10px; font-size: 14px; font-weight:bold;
+  }
 </style>
 </head>
 <body>
@@ -94,6 +127,7 @@
 
   <div id="hud">
     <div>⏱ <span id="timer">90</span>秒</div>
+    <button id="hintListBtn" type="button">💡 ヒント(0)</button>
     <div>📦 <span id="chestCount">0</span>/<span id="chestTotal">4</span></div>
   </div>
 
@@ -106,14 +140,21 @@
     </div>
     <div id="boostHud"><span>👟</span><div id="boostBarWrap"><div id="boostBar"></div></div><span id="boostSec"></span></div>
     <div id="hintBanner"></div>
+    <div id="hintPanel"><b>💡 ヒント</b><br><span id="hintPanelText"></span><span id="hintPanelNote">タップで閉じる</span></div>
+    <div id="hintListPanel">
+      <h3>読んだヒント</h3>
+      <div id="hintListBody"></div>
+      <button id="hintListClose" type="button">閉じる</button>
+    </div>
 
     <div id="loadingOverlay" class="overlay show">
       <p id="loadingMsg">読み込み中…</p>
     </div>
     <div id="quizOverlay" class="overlay">
       <div id="quizBox">
-        <h2 id="quizQuestion">この県の特産品はどれ？（ダミー問題）</h2>
+        <h2 id="quizQuestion"></h2>
         <div id="quizOptions"></div>
+        <button id="fiftyFiftyBtn" type="button">✂️ 50-50（2択にする）</button>
       </div>
     </div>
     <div id="gameOverOverlay" class="overlay">
@@ -146,8 +187,8 @@
 <!-- 読み込み順が重要：ESモジュールは使わず通常のscriptタグで読み込む。
      data_prefs.js（全国共通の県境データ）→ main.js（CONFIG・canvas/ctx・ワールド座標の宣言・stateなどの土台）
      → terrain.js → player.js → items.js → ui.js の順。
-     県ごとのデータ（data/pref<コード>/ の data_mesh.js・rail_data.js・river_data.js）は、ここでは読み込まず、
-     下の loadPrefectureData() でゲーム開始時に動的に読み込む。ゲームの開始処理は main.js の startGame()。 -->
+     県ごとのデータ（data/pref<XX>/ の data_mesh.js・rail_data.js・river_data.js・knowledge_<XX>.js）は、
+     ここでは読み込まず、下の loadPrefectureData() でゲーム開始時に動的に読み込む。ゲームの開始処理は main.js の startGame()。 -->
 <script src="data_prefs.js"></script>
 <script src="main.js"></script>
 <script src="terrain.js"></script>
@@ -157,14 +198,24 @@
 
 <script>
 // ==== 都道府県データの動的読み込み ====
-// loadPrefectureData(13) → data/pref13/ の data_mesh.js・rail_data.js・river_data.js を<script>タグで追加し、
-// 3ファイルすべての読み込みが終わったら resolve する Promise を返す。
-// フォルダ名は 'pref' + 数値コード（例：1 → pref1、13 → pref13）。県名はフォルダ名・ファイル名に使わない。
+// loadPrefectureData(13) → data/pref13/ の data_mesh.js・rail_data.js・river_data.js・knowledge_13.js を
+// <script>タグで追加し、4ファイルすべての読み込みが終わったら resolve する Promise を返す。
+// フォルダ名は 'pref' + 2桁ゼロ埋めのコード（1 → pref01、13 → pref13）。県名はフォルダ名・ファイル名に使わない。
+// いずれかの読み込みが失敗したら、console.error に失敗したファイルのパスを出して reject する（呼び出し側が画面にエラー表示）。
 // 注意：県データのファイルはトップレベルの const で変数を定義している（変更しない方針）ため、
 //       1回のページ表示で読み込めるのは1つの県だけ（別の県を読むとconstの再宣言エラーになる）。
 //       別の県に切り替えるときは、ページを読み込み直してから別のコードで呼ぶこと。
-var PREF_DATA_FILES = ['data_mesh.js', 'rail_data.js', 'river_data.js'];
 var loadedPrefCode = null;
+
+// KNOWLEDGE_<XX> を取り出す。window[...] に無い場合（const/let で宣言されたファイルはwindowのプロパティにならない）は、
+// グローバルのレキシカル環境から名前で取り出す。XXは検証済みの2桁数字のみなので、組み立てた式は安全。
+function getKnowledgeGlobal(xx){
+  var name = 'KNOWLEDGE_' + xx;
+  if(typeof window[name] !== 'undefined') return window[name];
+  try { return (new Function('return typeof ' + name + ' !== "undefined" ? ' + name + ' : undefined;'))(); }
+  catch(e){ return undefined; }
+}
+
 function loadPrefectureData(prefCode){
   return new Promise(function(resolve, reject){
     var code = Number(prefCode);
@@ -176,28 +227,44 @@ function loadPrefectureData(prefCode){
       else { reject(new Error('このページでは県コード ' + loadedPrefCode + ' のデータを読み込み済みです。別の県はページを読み込み直してください。')); }
       return;
     }
-    var dir = 'data/pref' + code + '/';
-    var remaining = PREF_DATA_FILES.length, failed = false;
-    PREF_DATA_FILES.forEach(function(name){
+    var xx = String(code).padStart(2, '0');
+    var dir = 'data/pref' + xx + '/';
+    var files = ['data_mesh.js', 'rail_data.js', 'river_data.js', 'knowledge_' + xx + '.js'];
+    var remaining = files.length, failed = false;
+    function fail(msg){ failed = true; reject(new Error(msg)); }
+    files.forEach(function(name){
+      var path = dir + name;
       var sc = document.createElement('script');
-      sc.src = dir + name;
-      sc.async = false; // 追加した順（mesh→rail→river）に実行されるようにする
+      sc.src = path;
+      sc.async = false; // 追加した順に実行されるようにする
       sc.onload = function(){
         if(failed) return;
         remaining--;
-        if(remaining === 0){
-          // 3ファイルが実際に必要な変数を定義したか最終確認
-          if(typeof TOKYO_RING === 'undefined' || typeof CAPITAL === 'undefined' || typeof MESH_RUNS_FLAT === 'undefined' ||
-             typeof RAIL_ROUTES === 'undefined' || typeof riverData === 'undefined'){
-            failed = true; reject(new Error(dir + ' のデータの中身が想定と違います')); return;
-          }
-          loadedPrefCode = code;
-          resolve(code);
+        if(remaining > 0) return;
+        // 4ファイルがそろった：必要な変数が定義されているか確認
+        if(typeof TOKYO_RING === 'undefined' || typeof CAPITAL === 'undefined' || typeof MESH_RUNS_FLAT === 'undefined' ||
+           typeof RAIL_ROUTES === 'undefined' || typeof riverData === 'undefined'){
+          console.error('[loadPrefectureData] ' + dir + ' のデータの中身が想定と違います（data_mesh.js / rail_data.js / river_data.js）');
+          fail(dir + ' のデータの中身が想定と違います'); return;
         }
+        // KNOWLEDGE_<XX> を取り出し、検証を通った問題を currentKnowledge（main.js）に格納する
+        var rawKnowledge = getKnowledgeGlobal(xx);
+        if(!Array.isArray(rawKnowledge)){
+          console.error('[loadPrefectureData] ' + dir + 'knowledge_' + xx + '.js に KNOWLEDGE_' + xx + '（配列）がありません');
+          fail('KNOWLEDGE_' + xx + ' が見つかりません（' + dir + 'knowledge_' + xx + '.js）'); return;
+        }
+        var validCount = setCurrentKnowledge(code, rawKnowledge);
+        if(validCount === 0){
+          console.error('[loadPrefectureData] KNOWLEDGE_' + xx + ' に有効な問題がありません');
+          fail('KNOWLEDGE_' + xx + ' に有効な問題がありません'); return;
+        }
+        loadedPrefCode = code;
+        resolve(code);
       };
       sc.onerror = function(){
         if(failed) return;
-        failed = true; reject(new Error(dir + name + ' を読み込めませんでした'));
+        console.error('[loadPrefectureData] 読み込みに失敗しました: ' + path);
+        fail(path + ' を読み込めませんでした');
       };
       document.head.appendChild(sc);
     });
