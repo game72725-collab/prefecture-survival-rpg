@@ -93,21 +93,146 @@ function meshCodeToSWLatLon(code){
   return [lat, lon];
 }
 
-// ゲーム起動時に1回だけRLEを展開し、メッシュコード→土地利用indexのMapを作る（毎フレーム展開はしない）
-const meshLookup = new Map();
-function buildMeshLookup(){
-  let prevEnd = null;
-  for(let i=0; i<MESH_RUNS_FLAT.length; i+=3){
-    const delta = MESH_RUNS_FLAT[i], idx = MESH_RUNS_FLAT[i+1], len = MESH_RUNS_FLAT[i+2];
-    const start = (prevEnd===null) ? delta : prevEnd + delta;
-    for(let k=0;k<len;k++){ meshLookup.set(start+k, idx); }
-    prevEnd = start + len;
+// ==== 土地利用メッシュ格子（landuseGrid） ====
+// 県データの MESH_RUNS_FLAT（ランレングス）を、起動時に1回だけ Uint8Array の格子へ直接展開する（Mapは使わない）。
+//   landuseGrid = { data, cols, rows, row0, col0, originLat, originLon, cellLatDeg, cellLonDeg }
+//   data[(row-row0)*cols + (col-col0)] ：0＝データなし（従来の「Mapに無い」＝データ範囲外と同じ扱い）、1〜＝ LANDUSE_ORDER のindex+1（この県データでは土地利用カテゴリ番号1〜17そのもの）
+//   row / col：100mメッシュの「全国通しの格子番号」。メッシュコードの桁から求める：
+//       row = ((p*8 + r)*10 + m)*10 + m2   （p=1次メッシュ緯度, r=2次, m=3次, m2=4次。南が小さく北が大きい）
+//       col = ((q*8 + c)*10 + n)*10 + n2   （q=1次メッシュ経度, c=2次, n=3次, n2=4次。西が小さく東が大きい）
+//   row0 / col0：格子の南西端のセルの row / col。originLat / originLon：そのセルの南西端の緯度経度（meshCodeToSWLatLon）
+//   範囲（row0, col0, rows, cols）は読み込んだデータの全マスから算出する（特定の県の値は埋め込まない）。
+let landuseGrid = null;
+
+let _mRow = 0, _mCol = 0; // decodeMeshCode の結果（アロケーションを避けるためモジュール変数で返す）
+// 10桁のメッシュコード → 格子番号（_mRow, _mCol）。コードとして成り立たない場合は false。
+// （r, c は 0〜7。従来のMapにはそのようなキーが存在しなかったので、検索結果は「データなし」になる）
+// コードは10桁（最大約5×10^9）で整数32bitに収まらないため、上5桁(hi)と下5桁(lo)に分けて、以降は小さな整数だけで計算する（高速化）。
+function decodeMeshCode(code){
+  if(!(code >= 0 && code < 1e10)) return false; // NaN・負数・11桁以上（latLonToMeshCodeの桁あふれ）は範囲外
+  const hi = Math.floor(code / 100000), lo = code - hi * 100000; // hi = 上位5桁（p, q, r）、lo = 下位5桁（c, m, n, m2, n2）
+  const r = hi % 10, q = ((hi / 10) | 0) % 100, p = (hi / 1000) | 0;
+  const c = (lo / 10000) | 0, m = ((lo / 1000) | 0) % 10, n = ((lo / 100) | 0) % 10, m2 = ((lo / 10) | 0) % 10, n2 = lo % 10;
+  if(r > 7 || c > 7) return false;
+  _mRow = (p*8 + r)*100 + m*10 + m2;
+  _mCol = (q*8 + c)*100 + n*10 + n2;
+  return true;
+}
+// 格子番号 → 10桁のメッシュコード（decodeMeshCode の逆）
+function meshCodeFromRowCol(row, col){
+  const m2 = row % 10, t = Math.floor(row / 10), m = t % 10, t2 = Math.floor(t / 10), r = t2 % 8, p = Math.floor(t2 / 8);
+  const n2 = col % 10, u = Math.floor(col / 10), n = u % 10, u2 = Math.floor(u / 10), c = u2 % 8, q = Math.floor(u2 / 8);
+  return p*1e8 + q*1e6 + r*1e5 + c*1e4 + m*1e3 + n*100 + m2*10 + n2;
+}
+
+// ゲーム起動時（initTerrain）に1回だけ、MESH_RUNS_FLAT を landuseGrid に展開する。毎回新しく作り直し、前の県の格子は引きずらない。
+// 展開が終わったら MESH_RUNS_FLAT への参照を切る（nullを代入）ので、他の処理はこの関数の後に MESH_RUNS_FLAT を使ってはいけない。
+// 高速化のため、各区間は「開始コードを1回だけ桁に分解し、あとは +1 を桁上がりつきで進める」方式で展開する
+// （結果は start+k を毎回分解するのと同じ。桁カウンタはローカル変数にして速くしている）。
+function buildLanduseGrid(){
+  landuseGrid = null;
+  const runs = MESH_RUNS_FLAT;
+  if(!runs || runs.length < 3) throw new Error('土地利用メッシュのデータ（MESH_RUNS_FLAT）が空です');
+  if(LANDUSE_ORDER.length > 254) throw new Error('土地利用カテゴリが多すぎます（254まで）');
+  let minRow = Infinity, maxRow = -Infinity, minCol = Infinity, maxCol = -Infinity, invalid = 0, ascending = true;
+  let cols = 0, data = null;
+  // pass 0：全マスの格子番号の最小・最大を求める（メッシュコードは row/col の単調な関数ではないので、コードの最小・最大ではなく row/col で範囲を決める）
+  // pass 1：値を書き込む（同じマスが複数回出てきたら、Mapと同じく後のものが勝つ）
+  for(let pass = 0; pass < 2; pass++){
+    let prevEnd = null;
+    for(let i = 0; i < runs.length; i += 3){
+      if(pass === 0 && i > 0 && runs[i] < 0) ascending = false;
+      const start = (prevEnd === null) ? runs[i] : prevEnd + runs[i], len = runs[i+2], v = runs[i+1] + 1;
+      prevEnd = start + len;
+      if(!(start >= 0 && start < 1e10)){ if(pass === 0) invalid += len; continue; }
+      const hi = Math.floor(start / 100000), lo = start - hi * 100000;
+      let dr = hi % 10, dq = ((hi / 10) | 0) % 100, dp = (hi / 1000) | 0;
+      let dc = (lo / 10000) | 0, dm = ((lo / 1000) | 0) % 10, dn = ((lo / 100) | 0) % 10, dm2 = ((lo / 10) | 0) % 10, dn2 = lo % 10;
+      for(let k = 0; k < len; k++){
+        if(dp < 100 && dr <= 7 && dc <= 7){
+          const row = (dp*8 + dr)*100 + dm*10 + dm2, col = (dq*8 + dc)*100 + dn*10 + dn2;
+          if(pass === 0){
+            if(row < minRow) minRow = row; if(row > maxRow) maxRow = row;
+            if(col < minCol) minCol = col; if(col > maxCol) maxCol = col;
+          } else {
+            data[(row - minRow) * cols + (col - minCol)] = v;
+          }
+        } else if(pass === 0) invalid++;
+        // コード+1（十進の桁上がり）
+        if(++dn2 === 10){ dn2 = 0; if(++dm2 === 10){ dm2 = 0; if(++dn === 10){ dn = 0; if(++dm === 10){ dm = 0;
+          if(++dc === 10){ dc = 0; if(++dr === 10){ dr = 0; if(++dq === 100){ dq = 0; dp++; } } } } } } }
+      }
+    }
+    if(pass === 0){
+      if(invalid) console.warn('[landuseGrid] メッシュコードとして成り立たないマスを ' + invalid + ' 件スキップしました');
+      if(!ascending) console.warn('[landuseGrid] ランレングスが昇順ではありません。単色ラスター等の描画順が従来と変わる可能性があります');
+      if(minRow === Infinity) throw new Error('有効な土地利用メッシュがありません');
+      cols = maxCol - minCol + 1;
+      const rows = maxRow - minRow + 1;
+      if(cols * rows > 4e8) throw new Error('土地利用格子が大きすぎます（' + cols + '×' + rows + '）。データの範囲を確認してください');
+      data = new Uint8Array(cols * rows);
+    }
+  }
+  const sw = meshCodeToSWLatLon(meshCodeFromRowCol(minRow, minCol));
+  landuseGrid = { data, cols, rows: maxRow - minRow + 1, row0: minRow, col0: minCol, originLat: sw[0], originLon: sw[1],
+                  cellLatDeg: MESH_CELL_LAT_DEG, cellLonDeg: MESH_CELL_LON_DEG };
+  MESH_RUNS_FLAT = null; // 展開用の元データは不要になったので参照を切る（メモリ解放）
+}
+
+// メッシュコード → 格子の値（0＝データなし）
+function landuseGridValue(code){
+  const g = landuseGrid;
+  if(!g || !decodeMeshCode(code)) return 0;
+  const row = _mRow - g.row0, col = _mCol - g.col0;
+  if(row < 0 || row >= g.rows || col < 0 || col >= g.cols) return 0;
+  return g.data[row * g.cols + col];
+}
+
+// 格子の全マスを、メッシュコードの昇順（＝従来のMapの挿入順＝ランレングスの順）で fn(meshCode, v) に渡す。v は 1〜（LANDUSE_ORDER の index+1）。
+// 単色ラスター・テクスチャ焼き込みは、重なり部分の塗り順で見た目が変わるため、従来と同じ順序で描く必要がある。
+function forEachLanduseCell(fn){
+  const g = landuseGrid;
+  if(!g) return;
+  const data = g.data, cols = g.cols, row0 = g.row0, col0 = g.col0;
+  const rowMax = row0 + g.rows - 1, colMax = col0 + cols - 1;
+  const pMin = Math.floor(row0 / 800), pMax = Math.floor(rowMax / 800);
+  const qMin = Math.floor(col0 / 800), qMax = Math.floor(colMax / 800);
+  for(let p = pMin; p <= pMax; p++){
+    for(let q = qMin; q <= qMax; q++){
+      for(let r = 0; r < 8; r++){
+        const rowR = (p*8 + r) * 100;
+        if(rowR + 99 < row0 || rowR > rowMax) continue;
+        for(let c = 0; c < 8; c++){
+          const colC = (q*8 + c) * 100;
+          if(colC + 99 < col0 || colC > colMax) continue;
+          for(let m = 0; m < 10; m++){
+            const rowM = rowR + m*10;
+            if(rowM + 9 < row0 || rowM > rowMax) continue;
+            for(let n = 0; n < 10; n++){
+              const colN = colC + n*10;
+              if(colN + 9 < col0 || colN > colMax) continue;
+              for(let m2 = 0; m2 < 10; m2++){
+                const row = rowM + m2;
+                if(row < row0 || row > rowMax) continue;
+                for(let n2 = 0; n2 < 10; n2++){
+                  const col = colN + n2;
+                  if(col < col0 || col > colMax) continue;
+                  const v = data[(row - row0) * cols + (col - col0)];
+                  if(v === 0) continue;
+                  fn(p*1e8 + q*1e6 + r*1e5 + c*1e4 + m*1e3 + n*100 + m2*10 + n2, v);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
 
 function getLanduseCode(lat, lon){
-  const idx = meshLookup.get(latLonToMeshCode(lat, lon));
-  return (idx===undefined) ? null : LANDUSE_ORDER[idx]; // null＝データ範囲外
+  const v = landuseGridValue(latLonToMeshCode(lat, lon)); // 緯度経度→メッシュコードは従来と同じ計算（丸め・境界の扱いも同一）
+  return (v === 0) ? null : LANDUSE_ORDER[v - 1]; // null＝データ範囲外
 }
 // 通行可否：海・海浜のみ進入不可（行き止まり）。河川・湖沼は通行可能（ただし速度側で大幅減速、update()参照）。
 function isPassable(lat, lon){
@@ -131,13 +256,13 @@ function buildLanduseRaster(){
   const rctx = rc.getContext('2d');
   const cellWpx = Math.ceil(MESH_CELL_LON_DEG * PX_PER_DEG_LON * LANDUSE_RASTER_SCALE) + 1;
   const cellHpx = Math.ceil(MESH_CELL_LAT_DEG * PX_PER_DEG_LAT * LANDUSE_RASTER_SCALE) + 1;
-  meshLookup.forEach((landuseIdx, meshCode)=>{
+  forEachLanduseCell((meshCode, v)=>{
     const [swLat, swLon] = meshCodeToSWLatLon(meshCode);
     const cLat = swLat + MESH_CELL_LAT_DEG/2, cLon = swLon + MESH_CELL_LON_DEG/2;
     const wx = worldX(cLon), wy = worldY(cLat);
     const rx = (wx - originX) * LANDUSE_RASTER_SCALE;
     const ry = (wy - originY) * LANDUSE_RASTER_SCALE;
-    rctx.fillStyle = LANDUSE_COLORS[LANDUSE_ORDER[landuseIdx]] || '#3f6b45';
+    rctx.fillStyle = LANDUSE_COLORS[LANDUSE_ORDER[v - 1]] || '#3f6b45';
     rctx.fillRect(rx - cellWpx/2, ry - cellHpx/2, cellWpx, cellHpx);
   });
   landuseRasterCanvas = rc;
@@ -146,7 +271,8 @@ function buildLanduseRaster(){
 
 // テクスチャ用の軽量グリッド（起動時に1回だけ構築）：行・列の整数インデックスで即座に引けるようにし、
 // 毎フレームの描画ループで文字列ベースのメッシュコード計算をしないようにするための最適化。
-// 当たり判定側（isPassable/getLanduseCode）はこれまで通りmeshLookupを直接使うので、判定ロジックには一切影響しない。
+// 当たり判定側（isPassable/getLanduseCode）は landuseGrid を直接使うので、判定ロジックには一切影響しない。
+// ※ textureGrid は県境bboxの角を原点にした別の位置合わせの格子で、現状どこからも読まれていない（landuseGrid から導出して作るだけ）。
 let textureGrid = null, textureGridCols = 0, textureGridRows = 0;
 let TEXTURE_GRID_LON0 = 0, TEXTURE_GRID_LAT0 = 0; // initTerrain()で lonMin / latMin を入れる
 function buildTextureGrid(){
@@ -155,8 +281,8 @@ function buildTextureGrid(){
   // 0=対象外, 1=高層建物, 2=工場, 3=低層建物, 4=低層建物(密集地), 5=河川湖沼, 6=森林,
   // 7=田, 8=その他農地, 9=荒地, 10=ゴルフ場, 11=海浜, 12=公園緑地
   textureGrid = new Uint8Array(textureGridCols * textureGridRows);
-  meshLookup.forEach((landuseIdx, meshCode)=>{
-    const code = LANDUSE_ORDER[landuseIdx];
+  forEachLanduseCell((meshCode, gv)=>{
+    const code = LANDUSE_ORDER[gv - 1];
     let v = 0;
     if(code === LANDUSE_HIGHRISE) v = 1;
     else if(code === LANDUSE_FACTORY) v = 2;
@@ -189,7 +315,7 @@ let texturedLanduseRasterOriginX = 0, texturedLanduseRasterOriginY = 0;
 let texturedLanduseRasterBuildStarted = false;
 function tryBuildTexturedLanduseRaster(){
   if(texturedLanduseRasterBuildStarted || textureLoadFinished < TEXTURE_IMAGE_COUNT) return;
-  if(!landuseRasterCanvas || !meshLookup || !LANDUSE_ORDER) return;
+  if(!landuseRasterCanvas || !landuseGrid || !LANDUSE_ORDER) return;
   texturedLanduseRasterBuildStarted = true;
   try {
     const rc = document.createElement('canvas');
@@ -237,8 +363,8 @@ function tryBuildTexturedLanduseRaster(){
     const originX = landuseRasterOriginX, originY = landuseRasterOriginY;
     const cellWpx = Math.ceil(MESH_CELL_LON_DEG * PX_PER_DEG_LON * TEXTURED_LANDUSE_RASTER_SCALE) + 1;
     const cellHpx = Math.ceil(MESH_CELL_LAT_DEG * PX_PER_DEG_LAT * TEXTURED_LANDUSE_RASTER_SCALE) + 1;
-    meshLookup.forEach((landuseIdx, meshCode)=>{
-      const code = LANDUSE_ORDER[landuseIdx];
+    forEachLanduseCell((meshCode, gv)=>{
+      const code = LANDUSE_ORDER[gv - 1];
       const file = fileForCode[code];
       const pattern = file && patternForFile[file];
       if(!pattern) return;
@@ -372,7 +498,7 @@ function buildRiverCanvas(){
 // 前提：data/pref<コード>/ の3ファイルが読み込み済み、かつsetupWorldCoordinates()が実行済み。
 // ======================================================================
 function initTerrain(){
-  buildMeshLookup();                // メッシュコード→土地利用indexのMap（RLE展開）
+  buildLanduseGrid();               // 土地利用メッシュ格子（RLEをUint8Arrayへ直接展開。展開後 MESH_RUNS_FLAT は null）
   buildLanduseRaster();             // 単色の土地利用ラスター
   TEXTURE_GRID_LON0 = lonMin; TEXTURE_GRID_LAT0 = latMin;
   buildTextureGrid();               // テクスチャ用の軽量グリッド

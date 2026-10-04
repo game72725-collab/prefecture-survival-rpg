@@ -46,7 +46,9 @@ const IMG_CAPITAL = loadImg('assets/capital.png'); // 元々アルファ有り�
 const CONFIG = {
   // ---- 県の選択・開発用 ----
   FORCE_PREFECTURE_CODE: null, // 数値（例：13）を入れると、その県で開始（data/available_prefs.js の一覧に含まれる場合のみ有効）。null ならURLの?pref=NN、無ければ一覧からランダム
-  DEBUG: false,                // true の時だけ、開発確認用の console.log を出す（県コードなどは画面には一切出さない）
+  DEBUG: false,                // true の時だけ、開発確認用の console.log と、画面隅の dt(ms)・FPS 表示を出す。URLに ?debug=1 を付けても true になる（県コードなどは画面には一切出さない）
+  DT_MAX_SEC: 0.05,            // 1フレームのdt（秒）の上限。タブ復帰や重い処理の直後に、大きな値で一気に動かないようにする（0.05秒＝20fps相当）
+  MAX_STEP_PX: 8,              // 移動の1サブステップの最大量(px)。1フレームの移動量がこれを超える時は等分して、各サブステップで通行判定・県境判定をやり直す（すり抜け防止）
   ZOOM_FACTOR: 1.4,        // 画面表示の拡大率。緯度経度→画面座標の変換すべてに掛かる
   SPEED_NORMAL: 3.4,       // 通常地形（建物用地・道路・鉄道・農地・その他など）での移動速度（ズーム未適用の基準値）
   SPEED_FOREST_MULT: 0.5,  // 森林（0500）での速度倍率
@@ -82,6 +84,8 @@ const CONFIG = {
   PINCH_INVERT: false,     // true にすると指の開閉とズーム方向が逆になる（既定：指を広げる＝拡大）
 };
 let cameraZoom = 1.0;
+// URLに ?debug=1 が付いていたら CONFIG.DEBUG を true にする（実機でdtやリフレッシュレート(60/90/120Hz)を確認するため）
+if(new URLSearchParams(window.location.search).get('debug') === '1') CONFIG.DEBUG = true;
 // 開発確認用のログ。CONFIG.DEBUG が真の時だけ出す（通常は何も出さない）
 function debugLog(){ if(CONFIG.DEBUG) console.log.apply(console, arguments); }
 
@@ -320,11 +324,18 @@ canvas.addEventListener('wheel', (e)=>{ e.preventDefault(); setCameraZoom(camera
 
 let lastTime = 0, timeAccum = 0;
 
-function update(dt){
+// update(dtSec, rawMs)
+//   dtSec：このフレームの経過時間（秒）。上限 CONFIG.DT_MAX_SEC で頭打ち済み（loop()が計算）。移動・コマ送りなど「見た目の進行」に使う。
+//   rawMs：前フレームからの実経過時間（ミリ秒、頭打ちなし）。残り時間タイマー専用（従来どおり実時間で減らす）。省略時は dtSec*1000。
+// 既存のCONFIG値（SPEED_NORMAL等）は「60fps換算の1フレームあたり」の意味のままなので、
+// 1フレームあたりの量には dtScale（= dtSec × 60。60Hzでは≒1）を掛ける。
+function update(dtSec, rawMs){
+  if(rawMs === undefined) rawMs = dtSec * 1000;
+  const dtScale = dtSec * 60;
   if(state.mode === 'gameover' || state.mode === 'clear') return;
 
-  // タイマーは mode に関わらず常に進行（クイズ中も止めない）
-  timeAccum += dt;
+  // タイマーは mode に関わらず常に進行（クイズ中も止めない）。実時間（rAFタイムスタンプの差）で減らす＝リフレッシュレートに依存しない
+  timeAccum += rawMs;
   if(timeAccum >= 1000){
     timeAccum -= 1000;
     state.timeLeft -= 1;
@@ -377,7 +388,7 @@ function update(dt){
   // 探検家のアニメーション：移動中のみコマを進め、止まっている間は先頭コマで静止。地形が変わったらリセット。
   if(targetSheet !== playerAnimSheet){ playerAnimSheet = targetSheet; playerAnimFrame = 0; playerAnimAccum = 0; }
   if(dx!==0 || dy!==0){
-    playerAnimAccum += dt;
+    playerAnimAccum += dtSec * 1000; // コマ送りはミリ秒単位の経過時間で進める（フレーム数ではない）
     while(playerAnimAccum >= frameMs){
       playerAnimAccum -= frameMs;
       playerAnimFrame = (playerAnimFrame + 1) % playerAnimSheet.frameCount;
@@ -387,17 +398,26 @@ function update(dt){
     playerAnimFrame = 0;
   }
 
-  const dLon = (dx * speed) / PX_PER_DEG_LON;
-  const dLat = -(dy * speed) / PX_PER_DEG_LAT;
+  // 移動量：speed は「60fps換算の1フレームあたり(px)」なので dtScale を掛ける（60Hzでは dtScale≒1 で従来と同じ）。
+  // 1フレームの移動量が MAX_STEP_PX を超える時は steps 個に等分し、サブステップごとに通行判定・県境判定を行う（すり抜け防止）。
+  // ただし dtScale が 1（＝60fps換算の1フレーム）以下なら、移動量は従来のゲームが1ステップで動かしていた量を超えないので、
+  // 常に1ステップのまま（バイク時の約8.1pxが MAX_STEP_PX=8 をわずかに超えても、60Hzの挙動を従来と完全に同じに保つため）。
+  // 1.001 は浮動小数点の誤差・タイムスタンプの微小なぶれを吸収する許容値。
+  const framePx = speed * dtScale;
+  const steps = (dtScale <= 1.001) ? 1 : Math.max(1, Math.ceil(framePx / CONFIG.MAX_STEP_PX));
+  const dLon = (dx * speed * dtScale / steps) / PX_PER_DEG_LON;
+  const dLat = -(dy * speed * dtScale / steps) / PX_PER_DEG_LAT;
   // X・Yを別々に判定することで、壁（進入不可地形・県境の外）に沿って滑るように移動できる。
-  // 地形の通行可否（isPassable）に加えて、東京都の輪郭の内側かどうか（isInsidePrefecture）も両方満たす必要がある。
-  if(dLon !== 0){
-    const tryLon = state.player.lon + dLon;
-    if(isPassable(state.player.lat, tryLon) && isInsidePrefecture(state.player.lat, tryLon)) state.player.lon = tryLon;
-  }
-  if(dLat !== 0){
-    const tryLat = state.player.lat + dLat;
-    if(isPassable(tryLat, state.player.lon) && isInsidePrefecture(tryLat, state.player.lon)) state.player.lat = tryLat;
+  // 地形の通行可否（isPassable）に加えて、県の輪郭の内側かどうか（isInsidePrefecture）も両方満たす必要がある。
+  for(let s = 0; s < steps; s++){
+    if(dLon !== 0){
+      const tryLon = state.player.lon + dLon;
+      if(isPassable(state.player.lat, tryLon) && isInsidePrefecture(state.player.lat, tryLon)) state.player.lon = tryLon;
+    }
+    if(dLat !== 0){
+      const tryLat = state.player.lat + dLat;
+      if(isPassable(tryLat, state.player.lon) && isInsidePrefecture(tryLat, state.player.lon)) state.player.lat = tryLat;
+    }
   }
   const clamped = clampToBounds(state.player.lat, state.player.lon);
   state.player.lat = clamped.lat; state.player.lon = clamped.lon;
@@ -624,10 +644,40 @@ function draw(){
 }
 
 // ミニマップ用の使い回しキャンバス（霧オーバーレイの合成用）。サイズはワールド比で固定なので一度だけ作る。
+// ==== ゲームループ（デルタタイム方式） ====
+// rAFのタイムスタンプ差から dt を求める。最初のフレームは 1/60 秒。上限は CONFIG.DT_MAX_SEC。
+// タブが非表示→表示に戻った時は前フレームのタイムスタンプを捨てる（戻った最初のフレームは 1/60 秒）。
+// 残り時間タイマーだけは従来どおり実時間（rawMs＝lastTime との差、頭打ちなし）で減らす。
+let lastFrameTime = null;
+document.addEventListener('visibilitychange', ()=>{ lastFrameTime = null; });
 function loop(now){
-  const dt = now - lastTime; lastTime = now;
-  update(dt); draw();
+  const rawMs = now - lastTime; lastTime = now;               // タイマー用の実経過時間（従来どおり）
+  let dtSec = (lastFrameTime === null) ? 1/60 : (now - lastFrameTime) / 1000;
+  lastFrameTime = now;
+  if(dtSec < 0) dtSec = 0;
+  const rawDtSec = dtSec;
+  dtSec = Math.min(dtSec, CONFIG.DT_MAX_SEC);
+  update(dtSec, rawMs); draw();
+  if(CONFIG.DEBUG) updateDebugHud(dtSec, rawDtSec);
   requestAnimationFrame(loop);
+}
+
+// 開発確認用：画面の隅に dt(ms) と FPS（直近の平均）を出す。CONFIG.DEBUG（または ?debug=1）の時だけ作られる。通常は何も出ない。
+let debugHudEl = null, debugAccumSec = 0, debugFrames = 0, debugText = '';
+function updateDebugHud(dtSec, rawDtSec){
+  if(!debugHudEl){
+    debugHudEl = document.createElement('div');
+    debugHudEl.id = 'debugHud';
+    debugHudEl.style.cssText = 'position:absolute;left:4px;bottom:3px;z-index:40;pointer-events:none;font:10px/1.3 monospace;color:#9fffd0;background:rgba(0,0,0,0.55);padding:1px 5px;border-radius:3px;';
+    wrap.appendChild(debugHudEl);
+  }
+  debugAccumSec += rawDtSec; debugFrames++;
+  if(debugAccumSec >= 0.5){ // 0.5秒ごとに平均して表示（数字がチラつかないように）
+    const avgDt = debugAccumSec / debugFrames;
+    debugText = 'dt ' + (avgDt * 1000).toFixed(1) + 'ms  ' + (1 / avgDt).toFixed(0) + 'fps  x' + (avgDt * 60).toFixed(2);
+    debugAccumSec = 0; debugFrames = 0;
+  }
+  debugHudEl.textContent = debugText || 'dt ...';
 }
 
 // ==== クイズ ====
