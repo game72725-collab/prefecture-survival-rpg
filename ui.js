@@ -76,7 +76,24 @@ function drawMinimap(pWX, pWY){
   miniFogCtx.globalCompositeOperation = 'source-over';
   ctx.drawImage(miniFogCanvas, x0, y0);
 
-  // 3) プレイヤー位置マーカー
+  // 3) 🧭県庁サーチ発動中：県庁の印（ピンクの星）。霧オーバーレイの「上」に重ねる。
+  //    座標は下のプレイヤー印と同じ変換（ワールド座標→ミニマップ）で、県庁のワールド座標から求める
+  if(state.compassActive){
+    const cx = x0 + ((worldX(state.boss.lon) - worldMinX) / WORLD_W) * MINI_W;
+    const cy = y0 + ((worldY(state.boss.lat) - worldMinY) / WORLD_H) * MINI_H;
+    ctx.beginPath();
+    for(let i = 0; i < 10; i++){
+      const rad = (i % 2 === 0) ? 6 : 2.6;
+      const ang = -Math.PI/2 + i * Math.PI/5;
+      const sx = cx + Math.cos(ang) * rad, sy = cy + Math.sin(ang) * rad;
+      if(i === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#ff2d95'; ctx.fill();
+    ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.5; ctx.stroke();
+  }
+
+  // 4) プレイヤー位置マーカー
   const px = x0 + ((pWX - worldMinX) / WORLD_W) * MINI_W;
   const py = y0 + ((pWY - worldMinY) / WORLD_H) * MINI_H;
   ctx.fillStyle = '#ffd93d';
@@ -108,7 +125,11 @@ function applyFiftyFifty(shown, correctText){
   return shown.filter(o => o === correctText || o === keepWrong);
 }
 
-function startQuiz(){ state.mode = 'quiz'; state.quizStep = 0; showQuiz(); }
+function startQuiz(){
+  state.mode = 'quiz'; state.quizStep = 0;
+  updateHintButtonVisibility(); // ボス戦中はヒントボタン非表示（開いているパネル・一覧も閉じる）
+  showQuiz();
+}
 function showQuiz(){
   const q = pickNextQuestion();
   if(!q){ console.error('[quiz] 出題できる問題がありません（currentKnowledgeが空）'); return; }
@@ -135,8 +156,15 @@ function renderQuizOptions(){
     btn.addEventListener('click', ()=> answerQuiz(opt === cq.correctText));
     quizOptions.appendChild(btn);
   });
-  // ✂️50-50ボタン：所持していて、この問題でまだ使っていない時だけ表示（1問につき1回）
-  fiftyFiftyBtn.style.display = (state.fiftyFiftyStock > 0 && !cq.fiftyUsed) ? 'block' : 'none';
+  renderFiftyFiftyBtn();
+}
+// ✂️50-50ボタン：ボス戦（クイズ画面）の中だけに存在する。所持数を表示し、0個またはこの問題で使用済みなら押せない表示にする
+function renderFiftyFiftyBtn(){
+  const cq = state.currentQuiz;
+  const usable = state.fiftyFiftyStock > 0 && !cq.fiftyUsed;
+  fiftyFiftyBtn.style.display = 'block';
+  fiftyFiftyBtn.disabled = !usable;
+  fiftyFiftyBtn.textContent = (cq.fiftyUsed ? '✂️ 50-50 使用済み' : '✂️ 50-50（2択にする）') + '　所持 ×' + state.fiftyFiftyStock;
 }
 function useFiftyFifty(){
   const cq = state.currentQuiz;
@@ -161,7 +189,7 @@ function answerQuiz(correct){
     setTimeout(()=>{
       wrongToast.style.display = 'none';
       if(state.timeLeft <= 0){ state.timeLeft = 0; endGame(false); }
-      else { state.mode = 'playing'; timerEl.textContent = state.timeLeft; }
+      else { state.mode = 'playing'; timerEl.textContent = state.timeLeft; updateHintButtonVisibility(); } // フィールドに戻る
     }, 900);
   }
 }
@@ -225,6 +253,15 @@ function resetHintUI(){
   closeHintPanel();
   closeHintList();
   refreshHintListButton();
+  updateHintButtonVisibility();
+}
+// ヒントボタンはフィールドで遊んでいる間（state.mode === 'playing'）だけ表示する。
+// ボス戦（quiz）に入った時・ゲーム終了時は非表示にし、開いているヒントパネル／一覧も同時に閉じる。
+// 読了記録（state.readHintIds）はここでは触らない（ボス戦の出題の優先判定に使うため保持する）。
+function updateHintButtonVisibility(){
+  const visible = state.mode === 'playing';
+  hintListBtn.style.display = visible ? '' : 'none';
+  if(!visible){ closeHintPanel(); closeHintList(); }
 }
 
 // ---- ゲーム開始 ----

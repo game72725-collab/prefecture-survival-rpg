@@ -5,9 +5,34 @@
 
 const IMG_CHEST_CLOSED = loadImg('assets/chest_closed.png', chromaKeyBlack);
 const SHEET_CHEST_OPENING = loadSpriteSheet('assets/chest_opening_sheet.png', 9);
-function pickChestItem(){
-  if(CONFIG.DEBUG_FORCE_ITEM === 'speed') return 'speed';
-  return Math.random() < CONFIG.SPEED_CHEST_RATE ? 'speed' : 'time';
+// 宝箱の中身の抽選（CONFIG.CHEST_ITEM_WEIGHTS の重み）。excludeCompass=true なら🧭を候補から外す。
+function pickChestItem(excludeCompass){
+  if(CONFIG.DEBUG_FORCE_ITEM) return CONFIG.DEBUG_FORCE_ITEM;
+  const pool = Object.keys(CONFIG.CHEST_ITEM_WEIGHTS).filter(k => !(excludeCompass && k === 'compass'));
+  let total = 0;
+  pool.forEach(k => { total += CONFIG.CHEST_ITEM_WEIGHTS[k]; });
+  let r = Math.random() * total;
+  for(const k of pool){
+    r -= CONFIG.CHEST_ITEM_WEIGHTS[k];
+    if(r < 0) return k;
+  }
+  return pool[pool.length - 1];
+}
+// 宝箱を取った瞬間の効果（update() から呼ばれる）。time/speed/compass はその場で発動、fifty は所持品に入るだけ
+function applyChestItem(item){
+  if(item === 'speed'){
+    activateSpeedBoost();
+    showItemMessage('👟 スピードアップ発動！');
+  } else if(item === 'fifty'){
+    grantFiftyFifty();
+    showItemMessage('✂️ 50-50 を入手！（ボス戦で使えます）');
+  } else if(item === 'compass'){
+    activateCompass();
+    showItemMessage('🧭 県庁サーチ発動！ミニマップに県庁の位置が出ます');
+  } else { // 'time'
+    state.timeLeft += 10;
+    showItemMessage('⏱ 残り時間 +10秒');
+  }
 }
 function activateSpeedBoost(){
   state.speedBoostUntil = performance.now() + CONFIG.BIKE_DURATION_SEC * 1000;
@@ -21,9 +46,11 @@ function showItemMessage(text){
   itemMsgTimer = setTimeout(()=> hintBanner.classList.remove('show'), 2200);
 }
 
-// ✂️50-50 の所持数を1つ増やす（クイズ側の使用処理は ui.js の useFiftyFifty）。
-// ※現状の宝箱は 'time' / 'speed' しか出さないため、この関数はまだどこからも呼ばれていない（宝箱への追加は別途）。
+// ✂️50-50 の所持数を1つ増やす（取得してもその場では発動しない。使用はボス戦中の ui.js の useFiftyFifty）
 function grantFiftyFifty(){ state.fiftyFiftyStock++; }
+
+// 🧭県庁サーチ：そのラン中ずっと、ミニマップ上に県庁の印を出す（描画は ui.js の drawMinimap）。メイン画面の表示は変えない
+function activateCompass(){ state.compassActive = true; }
 
 // ==== ヒント掲示板 ====
 // ステージ開始時に、有効な問題から重複なしでN問をランダムに選び、1問につき1つ置く。

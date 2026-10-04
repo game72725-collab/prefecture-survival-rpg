@@ -54,14 +54,14 @@ const CONFIG = {
   ANIM_FRAME_MS_BIKE: 45,    // 自転車のコマ送り間隔（素材が無い間はランニング素材を高速コマ送り）
   ANIM_FRAME_MS_KAYAK: 90,   // カヤックのコマ送り間隔
   BIKE_DURATION_SEC: 10,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
-  SPEED_CHEST_RATE: 0.35,    // 通常時、宝箱がスピードアップ宝箱になる確率
-  DEBUG_FORCE_ITEM: null,    // 'speed' にすると全宝箱がスピードアップ。null で通常（確率抽選）
+  // 宝箱の中身の抽選の重み（合計に対する割合で出る）。🧭県庁サーチは、発動済み／同じラン内で既に1つ割り当て済みなら抽選から外れる（items.js の pickChestItem）
+  CHEST_ITEM_WEIGHTS: { time: 35, speed: 25, fifty: 25, compass: 15 }, // time=⏱+10秒 / speed=👟スピードアップ / fifty=✂️50-50 / compass=🧭県庁サーチ
+  DEBUG_FORCE_ITEM: null,    // 'speed' / 'time' / 'fifty' / 'compass' のどれかにすると全宝箱がそのアイテムになる。null で通常（重み抽選）
   // ---- ヒント掲示板 ----
   HINT_BOARD_COUNT: 4,       // ステージ開始時に置く掲示板の数。旧ヒント宝箱は「近距離2＋遠距離1〜2＝3〜4個」だったため最大の4に合わせた。有効な問題数がこれより少なければ問題数に合わせる
   HINT_BOARD_SIZE: 60,       // 掲示板の表示高さ(px)
   HINT_BOARD_DIST_MIN_KM: 0.15, HINT_BOARD_DIST_MAX_KM: 3.0, // スポーン地点からの配置距離(km)。旧・近距離枠(0.15〜0.9)と遠距離枠(1.2〜3.0)を、区別なしの1範囲に統合
   HINT_PANEL_SEC: 8,         // ヒント表示パネルが自動で閉じるまでの秒数（タップでも閉じる）
-  DEBUG_FIFTY_FIFTY_STOCK: 0, // 動作確認用：ラン開始時の✂️50-50の所持数（通常は0。宝箱からの入手は未実装）
   // シートごとの表示調整。scale＝PLAYER_SIZEに掛ける倍率、yOffset＝足元位置の下方向ずらし(px)。
   // 人物の大きさ・足元が歩き／走りとずれる素材はここで合わせる。
   SHEET_ADJUST: {
@@ -227,7 +227,7 @@ function offsetLatLon(centerLat, centerLon, distKm, angleRad){
   return clampToBounds(lat, lon);
 }
 
-// 宝箱の中身：'speed'（スピードアップ）か 'time'（従来の+10秒）。DEBUG_FORCE_ITEM='speed'なら全部スピードアップ。
+// 宝箱の中身：'time'（+10秒）／'speed'（スピードアップ）／'fifty'（✂️50-50）／'compass'（🧭県庁サーチ）。抽選は items.js の pickChestItem()。
 function initGame(){
   resize();
   initFogMask();
@@ -252,7 +252,16 @@ function initGame(){
     askedIds: new Set(),    // 今回のランでボス戦に出題済みの問題ID（ラン開始ごとにリセット）
     lastAskedId: null,      // 直前に出題した問題ID
     currentQuiz: null,      // 出題中の問題（シャッフル後の選択肢・正解文字列など）
-    fiftyFiftyStock: CONFIG.DEBUG_FIFTY_FIFTY_STOCK // ✂️50-50の所持数
+    fiftyFiftyStock: 0,     // ✂️50-50の所持数（ラン開始で0にリセット）
+    compassActive: false    // 🧭県庁サーチが発動済みか（ラン開始で未発動にリセット）
+  };
+
+  // 宝箱の中身を抽選する。🧭は1つ割り当てたら、同じラン内の残りの宝箱の抽選から外す（2個目は意味がないため）
+  let compassTaken = state.compassActive;
+  const rollChestItem = ()=>{
+    const it = pickChestItem(compassTaken);
+    if(it === 'compass') compassTaken = true;
+    return it;
   };
 
   // ⑤ 宝箱：スポーン地点からの距離で「近距離枠」「遠距離枠」を分けて配置
@@ -262,13 +271,13 @@ function initGame(){
     const d = randRange(0.15, 0.9);
     const a = randRange(0, Math.PI*2);
     const p = offsetLatLon(spawn.lat, spawn.lon, d, a);
-    state.chests.push({ lat:p.lat, lon:p.lon, category:'near', item: pickChestItem(), state:'closed', openStart:0 });
+    state.chests.push({ lat:p.lat, lon:p.lon, category:'near', item: rollChestItem(), state:'closed', openStart:0 });
   }
   for(let i=0;i<FAR_COUNT;i++){
     const d = randRange(1.2, 3.0);
     const a = randRange(0, Math.PI*2);
     const p = offsetLatLon(spawn.lat, spawn.lon, d, a);
-    state.chests.push({ lat:p.lat, lon:p.lon, category:'far', item: pickChestItem(), state:'closed', openStart:0 });
+    state.chests.push({ lat:p.lat, lon:p.lon, category:'far', item: rollChestItem(), state:'closed', openStart:0 });
   }
   chestTotalEl.textContent = state.chests.length;
   chestCountEl.textContent = 0;
@@ -402,13 +411,9 @@ function update(dt){
       c.openStart = now;
       const opened = state.chests.filter(cc=>cc.state !== 'closed').length;
       chestCountEl.textContent = opened;
-      if(c.item === 'speed'){
-        activateSpeedBoost(); // 取得した瞬間に自動発動
-        showItemMessage('👟 スピードアップ発動！');
-      } else {
-        state.timeLeft += 10;
-        showItemMessage('⏱ 残り時間 +10秒');
-      }
+      // 🧭が出たが既に発動済みなら、別のアイテムに引き直す
+      if(c.item === 'compass' && state.compassActive) c.item = pickChestItem(true);
+      applyChestItem(c.item); // items.js：time / speed / fifty / compass の効果とメッセージ
     }
   });
 
@@ -623,6 +628,7 @@ function loop(now){
 // ==== クイズ ====
 function endGame(won){
   state.mode = won ? 'clear' : 'gameover';
+  updateHintButtonVisibility(); // ui.js：フィールドで遊んでいる間（playing）だけヒントボタンを表示
   if(won) clearOverlay.classList.add('show'); else gameOverOverlay.classList.add('show');
 }
 
