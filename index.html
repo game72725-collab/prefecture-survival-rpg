@@ -107,6 +107,9 @@
     <div id="boostHud"><span>👟</span><div id="boostBarWrap"><div id="boostBar"></div></div><span id="boostSec"></span></div>
     <div id="hintBanner"></div>
 
+    <div id="loadingOverlay" class="overlay show">
+      <p id="loadingMsg">読み込み中…</p>
+    </div>
     <div id="quizOverlay" class="overlay">
       <div id="quizBox">
         <h2 id="quizQuestion">この県の特産品はどれ？（ダミー問題）</h2>
@@ -141,17 +144,77 @@
 </div>
 
 <!-- 読み込み順が重要：ESモジュールは使わず通常のscriptタグで読み込む。
-     data_mesh.js/data_prefs.js/rail_data.js/river_data.js（データ）→ main.js（CONFIG・canvas/ctx・ワールド座標・stateなどの土台）
-     → terrain.js（鉄道路線・河川の事前描画もここ）→ player.js → items.js → ui.js（ui.js末尾でinitGame()を呼んでゲームを開始する） -->
-<script src="data_mesh.js"></script>
+     data_prefs.js（全国共通の県境データ）→ main.js（CONFIG・canvas/ctx・ワールド座標の宣言・stateなどの土台）
+     → terrain.js → player.js → items.js → ui.js の順。
+     県ごとのデータ（data/pref<コード>/ の data_mesh.js・rail_data.js・river_data.js）は、ここでは読み込まず、
+     下の loadPrefectureData() でゲーム開始時に動的に読み込む。ゲームの開始処理は main.js の startGame()。 -->
 <script src="data_prefs.js"></script>
-<script src="rail_data.js"></script>
-<script src="river_data.js"></script>
 <script src="main.js"></script>
 <script src="terrain.js"></script>
 <script src="player.js"></script>
 <script src="items.js"></script>
 <script src="ui.js"></script>
+
+<script>
+// ==== 都道府県データの動的読み込み ====
+// loadPrefectureData(13) → data/pref13/ の data_mesh.js・rail_data.js・river_data.js を<script>タグで追加し、
+// 3ファイルすべての読み込みが終わったら resolve する Promise を返す。
+// フォルダ名は 'pref' + 数値コード（例：1 → pref1、13 → pref13）。県名はフォルダ名・ファイル名に使わない。
+// 注意：県データのファイルはトップレベルの const で変数を定義している（変更しない方針）ため、
+//       1回のページ表示で読み込めるのは1つの県だけ（別の県を読むとconstの再宣言エラーになる）。
+//       別の県に切り替えるときは、ページを読み込み直してから別のコードで呼ぶこと。
+var PREF_DATA_FILES = ['data_mesh.js', 'rail_data.js', 'river_data.js'];
+var loadedPrefCode = null;
+function loadPrefectureData(prefCode){
+  return new Promise(function(resolve, reject){
+    var code = Number(prefCode);
+    if(!Number.isInteger(code) || code < 1 || code > 47){
+      reject(new Error('都道府県コードが不正です: ' + prefCode)); return;
+    }
+    if(loadedPrefCode !== null){
+      if(loadedPrefCode === code){ resolve(code); }
+      else { reject(new Error('このページでは県コード ' + loadedPrefCode + ' のデータを読み込み済みです。別の県はページを読み込み直してください。')); }
+      return;
+    }
+    var dir = 'data/pref' + code + '/';
+    var remaining = PREF_DATA_FILES.length, failed = false;
+    PREF_DATA_FILES.forEach(function(name){
+      var sc = document.createElement('script');
+      sc.src = dir + name;
+      sc.async = false; // 追加した順（mesh→rail→river）に実行されるようにする
+      sc.onload = function(){
+        if(failed) return;
+        remaining--;
+        if(remaining === 0){
+          // 3ファイルが実際に必要な変数を定義したか最終確認
+          if(typeof TOKYO_RING === 'undefined' || typeof CAPITAL === 'undefined' || typeof MESH_RUNS_FLAT === 'undefined' ||
+             typeof RAIL_ROUTES === 'undefined' || typeof riverData === 'undefined'){
+            failed = true; reject(new Error(dir + ' のデータの中身が想定と違います')); return;
+          }
+          loadedPrefCode = code;
+          resolve(code);
+        }
+      };
+      sc.onerror = function(){
+        if(failed) return;
+        failed = true; reject(new Error(dir + name + ' を読み込めませんでした'));
+      };
+      document.head.appendChild(sc);
+    });
+  });
+}
+
+// 現時点では東京都（コード13）で開始する。
+loadPrefectureData(13).then(function(){
+  startGame();
+}).catch(function(err){
+  console.error(err);
+  var m = document.getElementById('loadingMsg');
+  if(m) m.textContent = '読み込みに失敗しました：' + err.message;
+  var o = document.getElementById('loadingOverlay');
+  if(o) o.classList.add('show');
+});
+</script>
 
 </body>
 </html>

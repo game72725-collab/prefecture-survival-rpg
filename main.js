@@ -37,7 +37,7 @@ function loadImg(src, processFn){
 }
 function srcSize(s){ return (s.naturalWidth !== undefined) ? [s.naturalWidth, s.naturalHeight] : [s.width, s.height]; }
 
-const IMG_CAPITAL = loadImg('capital.png'); // 元々アルファ有りなので加工不要
+const IMG_CAPITAL = loadImg('assets/capital.png'); // 元々アルファ有りなので加工不要
 
 // ==== 地形テクスチャ（建物用地・河川湖沼・森林・田・その他農地・荒地・ゴルフ場・海浜）：
 //      ワールド座標に固定したCanvasPatternとして使う ====
@@ -74,31 +74,41 @@ const CONFIG = {
 };
 let cameraZoom = 1.0;
 
-// ==== 東京都 土地利用メッシュデータ（100m, JIS X0410地域メッシュ, RLE圧縮） ====
+// ==== 県ごとのワールド座標系 ====
+// 県データ（data/pref<コード>/data_mesh.js の TOKYO_RING 等）が読み込まれてから初めて決まる値なので、
+// ここでは宣言だけ行い、setupWorldCoordinates() が読み込み完了後に一度だけ値を入れる。
+// （他ファイルからは従来と同じ名前でそのまま参照できる）
 let lonMin=Infinity, lonMax=-Infinity, latMin=Infinity, latMax=-Infinity;
-TOKYO_RING.forEach(([lon,lat])=>{
-  if(lon<lonMin) lonMin=lon; if(lon>lonMax) lonMax=lon;
-  if(lat<latMin) latMin=lat; if(lat>latMax) latMax=lat;
-});
-const REF_LAT = (latMin+latMax)/2;
-const REF_LON = (lonMin+lonMax)/2;
-// ①ズーム倍率：緯度経度→画面座標の変換すべて（worldX/worldY）に一括で掛かるよう、基準のpx/度に直接乗算する
-const PX_PER_DEG_LAT = 8000 * CONFIG.ZOOM_FACTOR;
-const PX_PER_DEG_LON = PX_PER_DEG_LAT * Math.cos(REF_LAT * Math.PI/180);
+let REF_LAT, REF_LON, PX_PER_DEG_LAT, PX_PER_DEG_LON;
+const MARGIN_DEG = 0.03;
+let worldMinX, worldMaxX, worldMinY, worldMaxY, WORLD_W, WORLD_H;
+let OTHER_PREF_RINGS_WORLD = [];
 function worldX(lon){ return (lon - REF_LON) * PX_PER_DEG_LON; }
 function worldY(lat){ return -(lat - REF_LAT) * PX_PER_DEG_LAT; }
 
-const MARGIN_DEG = 0.03;
-const worldMinX = worldX(lonMin-MARGIN_DEG), worldMaxX = worldX(lonMax+MARGIN_DEG);
-const worldMinY = worldY(latMax+MARGIN_DEG), worldMaxY = worldY(latMin-MARGIN_DEG);
-const WORLD_W = worldMaxX - worldMinX, WORLD_H = worldMaxY - worldMinY;
+function setupWorldCoordinates(){
+  lonMin=Infinity; lonMax=-Infinity; latMin=Infinity; latMax=-Infinity;
+  TOKYO_RING.forEach(([lon,lat])=>{
+    if(lon<lonMin) lonMin=lon; if(lon>lonMax) lonMax=lon;
+    if(lat<latMin) latMin=lat; if(lat>latMax) latMax=lat;
+  });
+  REF_LAT = (latMin+latMax)/2;
+  REF_LON = (lonMin+lonMax)/2;
+  // ①ズーム倍率：緯度経度→画面座標の変換すべて（worldX/worldY）に一括で掛かるよう、基準のpx/度に直接乗算する
+  PX_PER_DEG_LAT = 8000 * CONFIG.ZOOM_FACTOR;
+  PX_PER_DEG_LON = PX_PER_DEG_LAT * Math.cos(REF_LAT * Math.PI/180);
 
-// 東京都以外の都道府県ポリゴン：フラット配列を [ [ [wx,wy], ... ], ... ] のワールド座標リングに変換（一度だけ）
-const OTHER_PREF_RINGS_WORLD = OTHER_PREF_RINGS_FLAT.map(flat=>{
-  const ring = [];
-  for(let i=0;i<flat.length;i+=2){ ring.push([worldX(flat[i]), worldY(flat[i+1])]); }
-  return ring;
-});
+  worldMinX = worldX(lonMin-MARGIN_DEG); worldMaxX = worldX(lonMax+MARGIN_DEG);
+  worldMinY = worldY(latMax+MARGIN_DEG); worldMaxY = worldY(latMin-MARGIN_DEG);
+  WORLD_W = worldMaxX - worldMinX; WORLD_H = worldMaxY - worldMinY;
+
+  // 東京都以外の都道府県ポリゴン：フラット配列を [ [ [wx,wy], ... ], ... ] のワールド座標リングに変換（一度だけ）
+  OTHER_PREF_RINGS_WORLD = OTHER_PREF_RINGS_FLAT.map(flat=>{
+    const ring = [];
+    for(let i=0;i<flat.length;i+=2){ ring.push([worldX(flat[i]), worldY(flat[i+1])]); }
+    return ring;
+  });
+}
 
 // 東京都の土地利用を、起動時に一度だけオフスクリーンcanvasへラスター化しておく（毎フレームの193,000セル描画を避けるため）
 const KM_PER_DEG_LAT = 111;
@@ -587,3 +597,19 @@ function endGame(won){
 
 window.resetGame = function(){ initGame(); };
 
+// ==== ゲーム開始（県データの動的読み込み完了後に、index.htmlから1回だけ呼ばれる） ====
+// 県データ（TOKYO_RING・MESH_RUNS_FLAT・RAIL_ROUTES・riverData 等）が必要な「1回だけの重い初期化」をここに集約。
+// resetGame()（もう一度プレイ）が呼ぶ initGame() は、ラン単位の状態（位置・宝箱・霧・タイマー）の初期化だけを担当し、
+// 地形ラスター等は作り直さない。
+let gameStarted = false;
+function startGame(){
+  if(gameStarted) return;
+  gameStarted = true;
+  setupWorldCoordinates(); // ワールド座標系（県データのポリゴンから決まる）
+  initTerrain();           // terrain.js：メッシュ展開・地形ラスター・テクスチャ読み込み・鉄道/河川canvas
+  initMinimap();           // ui.js：ミニマップ用canvas
+  initGame();              // ラン単位の初期化（スポーン・宝箱・霧・タイマー）
+  const loadingOverlay = document.getElementById('loadingOverlay');
+  if(loadingOverlay) loadingOverlay.classList.remove('show');
+  requestAnimationFrame(loop);
+}

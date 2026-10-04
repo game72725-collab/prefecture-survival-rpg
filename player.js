@@ -16,12 +16,12 @@ function loadSpriteSheet(src, frameCount){
   img.src = src;
   return img;
 }
-const SHEET_PLAYER_WALK = loadSpriteSheet('player_walk_sheet.png', 12); // 森林：山歩行として流用
-const SHEET_PLAYER_RUN = loadSpriteSheet('player_run_sheet.png', 14);    // 通常地形：ランニング
-const SHEET_PLAYER_KAYAK = loadSpriteSheet('player_kayak_sheet.png', 12); // 河川・湖沼：カヤック
-// 自転車：player_bike_sheet.png を置けば自動で使われる。素材が無い／読み込み失敗の間は、
+const SHEET_PLAYER_WALK = loadSpriteSheet('assets/player_walk_sheet.png', 12); // 森林：山歩行として流用
+const SHEET_PLAYER_RUN = loadSpriteSheet('assets/player_run_sheet.png', 14);    // 通常地形：ランニング
+const SHEET_PLAYER_KAYAK = loadSpriteSheet('assets/player_kayak_sheet.png', 12); // 河川・湖沼：カヤック
+// 自転車：assets/player_bike_sheet.png を置けば自動で使われる。素材が無い／読み込み失敗の間は、
 // 選択側（update内）でランニング素材に自動フォールバックする。※コマ数は素材完成時に合わせて更新（現在は仮の12）
-const SHEET_PLAYER_BIKE = loadSpriteSheet('player_bike_sheet.png', 12);
+const SHEET_PLAYER_BIKE = loadSpriteSheet('assets/player_bike_sheet.png', 12);
 
 // 現在のスプライトシート再生位置（フレームインデックスと経過時間）。地形が切り替わったらリセットする。
 let playerAnimFrame = 0, playerAnimAccum = 0, playerAnimSheet = SHEET_PLAYER_RUN;

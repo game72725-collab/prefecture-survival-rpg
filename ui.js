@@ -36,10 +36,16 @@ function updateBoostHud(now){
   }
 }
 
-const MINI_W = 92, MINI_H = Math.round(MINI_W * (WORLD_H / WORLD_W));
-const miniFogCanvas = document.createElement('canvas');
-miniFogCanvas.width = MINI_W; miniFogCanvas.height = MINI_H;
-const miniFogCtx = miniFogCanvas.getContext('2d');
+// ミニマップの高さ・霧合成用canvasはワールドの縦横比（県データ読み込み後に確定）で決まるため、
+// 宣言だけここに置き、initMinimap()（main.jsのstartGame()から1回だけ呼ばれる）で作る。
+const MINI_W = 92;
+let MINI_H = 0, miniFogCanvas = null, miniFogCtx = null;
+function initMinimap(){
+  MINI_H = Math.round(MINI_W * (WORLD_H / WORLD_W));
+  miniFogCanvas = document.createElement('canvas');
+  miniFogCanvas.width = MINI_W; miniFogCanvas.height = MINI_H;
+  miniFogCtx = miniFogCanvas.getContext('2d');
+}
 
 function drawMinimap(pWX, pWY){
   const x0 = W - MINI_W - 12, y0 = 12;
@@ -118,9 +124,6 @@ function answerQuiz(correct){
 
 
 // ---- ゲーム開始 ----
-// index.html の <script> はui.jsを最後に読み込む。initGame()はmain.jsで定義されているが、
-// その中でui.js(hideAllOverlays等)やitems.js(pickChestItem等)の関数を呼ぶため、
-// 全ファイルの読み込みが終わったこの時点で呼び出す必要がある。ES Modulesを使わない構成上の都合であり、
-// 処理内容・タイミング自体は分割前と同じ（起動時に1回だけ呼ばれる）。
-initGame();
-requestAnimationFrame(loop);
+// 以前はこのファイルの末尾で initGame() と requestAnimationFrame(loop) を直接呼んでいたが、
+// 県データを動的に読み込むようにしたため、開始処理は main.js の startGame() に移した
+// （index.html の loadPrefectureData() 完了後に呼ばれる）。

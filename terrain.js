@@ -33,19 +33,23 @@ function loadTexture(src, setPattern){
   };
   img.src = src;
 }
-// ctx（canvasコンテキスト）はこの後で定義されるが、画像読み込みは非同期なのでonload発火時には定義済みになる
-loadTexture('building.webp', p=>{ PATTERN_BUILDING = p; });
-loadTexture('water.webp', p=>{ PATTERN_WATER = p; });
-loadTexture('forest.webp', p=>{ PATTERN_FOREST = p; });
-loadTexture('ricefield.webp', p=>{ PATTERN_RICEFIELD = p; });
-loadTexture('vegetablegarden.webp', p=>{ PATTERN_VEGGARDEN = p; });
-loadTexture('wasteland.webp', p=>{ PATTERN_WASTELAND = p; });
-loadTexture('golf.webp', p=>{ PATTERN_GOLF = p; });
-loadTexture('beach.webp', p=>{ PATTERN_BEACH = p; });
-loadTexture('factory.webp', p=>{ PATTERN_FACTORY = p; });
-loadTexture('house.webp', p=>{ PATTERN_HOUSE = p; });
-loadTexture('houses.webp', p=>{ PATTERN_HOUSES = p; });
-loadTexture('park.webp', p=>{ PATTERN_PARK = p; });
+// 12種のテクスチャ画像の読み込みを開始する（initTerrain()から1回だけ呼ぶ）。
+// onload内でMESH_CELL_LON_DEG・PX_PER_DEG_LON等（県データ読み込み後に確定する値）を使うため、
+// 県データの読み込み完了後に始める。
+function startTextureLoads(){
+  loadTexture('assets/building.webp', p=>{ PATTERN_BUILDING = p; });
+  loadTexture('assets/water.webp', p=>{ PATTERN_WATER = p; });
+  loadTexture('assets/forest.webp', p=>{ PATTERN_FOREST = p; });
+  loadTexture('assets/ricefield.webp', p=>{ PATTERN_RICEFIELD = p; });
+  loadTexture('assets/vegetablegarden.webp', p=>{ PATTERN_VEGGARDEN = p; });
+  loadTexture('assets/wasteland.webp', p=>{ PATTERN_WASTELAND = p; });
+  loadTexture('assets/golf.webp', p=>{ PATTERN_GOLF = p; });
+  loadTexture('assets/beach.webp', p=>{ PATTERN_BEACH = p; });
+  loadTexture('assets/factory.webp', p=>{ PATTERN_FACTORY = p; });
+  loadTexture('assets/house.webp', p=>{ PATTERN_HOUSE = p; });
+  loadTexture('assets/houses.webp', p=>{ PATTERN_HOUSES = p; });
+  loadTexture('assets/park.webp', p=>{ PATTERN_PARK = p; });
+}
 
 // 探検家・宝箱オープン演出は、実アルファ入りwebm動画から抽出したフレームを
 // 横一列に並べたスプライトシート（本物の透過PNG）として読み込み、Canvas上でコマ送り表示する。
@@ -91,7 +95,7 @@ function meshCodeToSWLatLon(code){
 
 // ゲーム起動時に1回だけRLEを展開し、メッシュコード→土地利用indexのMapを作る（毎フレーム展開はしない）
 const meshLookup = new Map();
-(function buildMeshLookup(){
+function buildMeshLookup(){
   let prevEnd = null;
   for(let i=0; i<MESH_RUNS_FLAT.length; i+=3){
     const delta = MESH_RUNS_FLAT[i], idx = MESH_RUNS_FLAT[i+1], len = MESH_RUNS_FLAT[i+2];
@@ -99,7 +103,7 @@ const meshLookup = new Map();
     for(let k=0;k<len;k++){ meshLookup.set(start+k, idx); }
     prevEnd = start + len;
   }
-})();
+}
 
 function getLanduseCode(lat, lon){
   const idx = meshLookup.get(latLonToMeshCode(lat, lon));
@@ -139,13 +143,12 @@ function buildLanduseRaster(){
   landuseRasterCanvas = rc;
   landuseRasterOriginX = originX; landuseRasterOriginY = originY;
 }
-buildLanduseRaster();
 
 // テクスチャ用の軽量グリッド（起動時に1回だけ構築）：行・列の整数インデックスで即座に引けるようにし、
 // 毎フレームの描画ループで文字列ベースのメッシュコード計算をしないようにするための最適化。
 // 当たり判定側（isPassable/getLanduseCode）はこれまで通りmeshLookupを直接使うので、判定ロジックには一切影響しない。
 let textureGrid = null, textureGridCols = 0, textureGridRows = 0;
-const TEXTURE_GRID_LON0 = lonMin, TEXTURE_GRID_LAT0 = latMin;
+let TEXTURE_GRID_LON0 = 0, TEXTURE_GRID_LAT0 = 0; // initTerrain()で lonMin / latMin を入れる
 function buildTextureGrid(){
   textureGridCols = Math.ceil((lonMax - lonMin) / MESH_CELL_LON_DEG) + 2;
   textureGridRows = Math.ceil((latMax - latMin) / MESH_CELL_LAT_DEG) + 2;
@@ -176,7 +179,6 @@ function buildTextureGrid(){
     }
   });
 }
-buildTextureGrid();
 
 // ==== テクスチャ付き土地利用ラスターを起動時に一度だけ焼き付ける ==== 
 // 元の土地利用ラスターを下地にコピーし、対応カテゴリだけテクスチャを重ねる。
@@ -205,9 +207,9 @@ function tryBuildTexturedLanduseRaster(){
 
     const patternForFile = Object.create(null);
     for(const src of [
-      'building.webp', 'factory.webp', 'house.webp', 'houses.webp', 'water.webp',
-      'forest.webp', 'ricefield.webp', 'vegetablegarden.webp', 'wasteland.webp',
-      'golf.webp', 'beach.webp', 'park.webp'
+      'assets/building.webp', 'assets/factory.webp', 'assets/house.webp', 'assets/houses.webp', 'assets/water.webp',
+      'assets/forest.webp', 'assets/ricefield.webp', 'assets/vegetablegarden.webp', 'assets/wasteland.webp',
+      'assets/golf.webp', 'assets/beach.webp', 'assets/park.webp'
     ]){
       const img = TEXTURE_IMAGES[src];
       if(!img || !img.naturalWidth || !img.naturalHeight) continue;
@@ -219,18 +221,18 @@ function tryBuildTexturedLanduseRaster(){
       patternForFile[src] = pattern;
     }
     const fileForCode = Object.create(null);
-    fileForCode[LANDUSE_HIGHRISE] = 'building.webp';
-    fileForCode[LANDUSE_FACTORY] = 'factory.webp';
-    fileForCode[LANDUSE_LOWRISE] = 'house.webp';
-    fileForCode[LANDUSE_LOWRISE_DENSE] = 'houses.webp';
-    fileForCode[LANDUSE_RIVER] = 'water.webp';
-    fileForCode[LANDUSE_FOREST] = 'forest.webp';
-    fileForCode[LANDUSE_RICE] = 'ricefield.webp';
-    fileForCode[LANDUSE_OTHER_AGRI] = 'vegetablegarden.webp';
-    fileForCode[LANDUSE_WASTELAND] = 'wasteland.webp';
-    fileForCode[LANDUSE_GOLF] = 'golf.webp';
-    fileForCode[LANDUSE_BEACH] = 'beach.webp';
-    fileForCode[LANDUSE_PARK] = 'park.webp';
+    fileForCode[LANDUSE_HIGHRISE] = 'assets/building.webp';
+    fileForCode[LANDUSE_FACTORY] = 'assets/factory.webp';
+    fileForCode[LANDUSE_LOWRISE] = 'assets/house.webp';
+    fileForCode[LANDUSE_LOWRISE_DENSE] = 'assets/houses.webp';
+    fileForCode[LANDUSE_RIVER] = 'assets/water.webp';
+    fileForCode[LANDUSE_FOREST] = 'assets/forest.webp';
+    fileForCode[LANDUSE_RICE] = 'assets/ricefield.webp';
+    fileForCode[LANDUSE_OTHER_AGRI] = 'assets/vegetablegarden.webp';
+    fileForCode[LANDUSE_WASTELAND] = 'assets/wasteland.webp';
+    fileForCode[LANDUSE_GOLF] = 'assets/golf.webp';
+    fileForCode[LANDUSE_BEACH] = 'assets/beach.webp';
+    fileForCode[LANDUSE_PARK] = 'assets/park.webp';
 
     const originX = landuseRasterOriginX, originY = landuseRasterOriginY;
     const cellWpx = Math.ceil(MESH_CELL_LON_DEG * PX_PER_DEG_LON * TEXTURED_LANDUSE_RASTER_SCALE) + 1;
@@ -256,8 +258,6 @@ function tryBuildTexturedLanduseRaster(){
     texturedLanduseRasterCanvas = null;
   }
 }
-// 画像ロード完了がbuildTextureGridより後でも、ここから最終確認する。
-tryBuildTexturedLanduseRaster();
 
 
 // ==== 鉄道路線の描画（rail_data.js の RAIL_ROUTES を使用） ====
@@ -322,7 +322,6 @@ function buildRailCanvas(){
   railCanvas = rc;
   railCanvasOriginX = originX; railCanvasOriginY = originY;
 }
-buildRailCanvas();
 
 
 // ==== 河川の描画（river_data.js の riverData を使用） ====
@@ -365,4 +364,20 @@ function buildRiverCanvas(){
   riverCanvas = rc;
   riverCanvasOriginX = originX; riverCanvasOriginY = originY;
 }
-buildRiverCanvas();
+
+
+// ======================================================================
+// 地形まわりの初期化（県データ読み込み完了後に、main.jsのstartGame()から1回だけ呼ばれる）
+// 以前はこのファイルを読み込んだ瞬間にトップレベルで実行していた処理を、順序そのままで関数にまとめたもの。
+// 前提：data/pref<コード>/ の3ファイルが読み込み済み、かつsetupWorldCoordinates()が実行済み。
+// ======================================================================
+function initTerrain(){
+  buildMeshLookup();                // メッシュコード→土地利用indexのMap（RLE展開）
+  buildLanduseRaster();             // 単色の土地利用ラスター
+  TEXTURE_GRID_LON0 = lonMin; TEXTURE_GRID_LAT0 = latMin;
+  buildTextureGrid();               // テクスチャ用の軽量グリッド
+  startTextureLoads();              // テクスチャ画像の読み込み開始（全部そろったらonload側で焼き込み）
+  tryBuildTexturedLanduseRaster();  // すでに揃っていれば（キャッシュ等）ここで焼き込み
+  buildRailCanvas();                // 鉄道canvas
+  buildRiverCanvas();               // 河川canvas
+}

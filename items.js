@@ -3,8 +3,8 @@
 // 宝箱・ヒント・アイテム効果（スピードアップ等）
 // ======================================================================
 
-const IMG_CHEST_CLOSED = loadImg('chest_closed.png', chromaKeyBlack);
-const SHEET_CHEST_OPENING = loadSpriteSheet('chest_opening_sheet.png', 9);
+const IMG_CHEST_CLOSED = loadImg('assets/chest_closed.png', chromaKeyBlack);
+const SHEET_CHEST_OPENING = loadSpriteSheet('assets/chest_opening_sheet.png', 9);
 function pickChestItem(){
   if(CONFIG.DEBUG_FORCE_ITEM === 'speed') return 'speed';
   return Math.random() < CONFIG.SPEED_CHEST_RATE ? 'speed' : 'time';
