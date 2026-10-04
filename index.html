@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
-<title>都道府県サバイバルRPG（仮）Phase2B：東京都テスト</title>
+<title>都道府県サバイバルRPG（仮）</title>
 <style>
   :root{ --bg:#1b2430; --ui:#0f1620; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; user-select: none; }
@@ -186,10 +186,12 @@
 </div>
 
 <!-- 読み込み順が重要：ESモジュールは使わず通常のscriptタグで読み込む。
-     data_prefs.js（全国共通の県境データ）→ main.js（CONFIG・canvas/ctx・ワールド座標の宣言・stateなどの土台）
-     → terrain.js → player.js → items.js → ui.js の順。
+     data/available_prefs.js（データが揃っている県コードの一覧）→ data_prefs.js（全国共通の県境データ）
+     → main.js（CONFIG・canvas/ctx・ワールド座標の宣言・stateなどの土台）→ terrain.js → player.js → items.js → ui.js の順。
      県ごとのデータ（data/pref<XX>/ の data_mesh.js・rail_data.js・river_data.js・knowledge_<XX>.js）は、
-     ここでは読み込まず、下の loadPrefectureData() でゲーム開始時に動的に読み込む。ゲームの開始処理は main.js の startGame()。 -->
+     ここでは読み込まず、下の loadPrefectureData() でゲーム開始時に動的に読み込む。
+     ゲームの入口は main.js の startGame()（県を決める → 読み込む → 初期化してループ開始）。 -->
+<script src="data/available_prefs.js"></script>
 <script src="data_prefs.js"></script>
 <script src="main.js"></script>
 <script src="terrain.js"></script>
@@ -200,12 +202,28 @@
 <script>
 // ==== 都道府県データの動的読み込み ====
 // loadPrefectureData(13) → data/pref13/ の data_mesh.js・rail_data.js・river_data.js・knowledge_13.js を
-// <script>タグで追加し、4ファイルすべての読み込みが終わったら resolve する Promise を返す。
-// フォルダ名は 'pref' + 2桁ゼロ埋めのコード（1 → pref01、13 → pref13）。県名はフォルダ名・ファイル名に使わない。
-// いずれかの読み込みが失敗したら、console.error に失敗したファイルのパスを出して reject する（呼び出し側が画面にエラー表示）。
-// 注意：県データのファイルはトップレベルの const で変数を定義している（変更しない方針）ため、
-//       1回のページ表示で読み込めるのは1つの県だけ（別の県を読むとconstの再宣言エラーになる）。
-//       別の県に切り替えるときは、ページを読み込み直してから別のコードで呼ぶこと。
+// <script>タグで追加し、4ファイルすべての読み込みが「終わって」から（成功も失敗も出そろってから）結果を返す Promise。
+// フォルダ名は 'pref' + 2桁ゼロ埋めのコード（1 → pref01、13 → pref13）。
+// どれか1つでも失敗（onerror）したら、console.error に失敗したファイルのパスを出して reject する。
+// 呼び出し側（main.js の startGame）は、reject された県を候補から外して別の県で読み直す。
+//
+// 【取り残し対策】県データのファイルは、トップレベルの var で変数を定義する（上書きできるように）。
+//  ・読み込みの冒頭で、県データの変数をすべて undefined に戻す（前の失敗の残りを持ち込まない）
+//  ・4ファイルすべての実行が終わってから結果を返すので、失敗した県の遅れて届いたファイルが、次の県の読み込み後に
+//    実行されて上書きすることは起きない
+//  ・読み込み後、必要な変数がすべて定義されていることを確認する
+// 他の県のデータファイルも、下の「各ファイルが公開する変数名」と同じ名前で作ること。
+var PREFECTURE_DATA_GLOBALS = {
+  'data_mesh.js': ['PREFECTURE_RING', 'CAPITAL', 'LANDUSE_ORDER', 'LANDUSE_COLORS', 'MESH_RUNS_FLAT', 'MESH_CELL_LAT_DEG', 'MESH_CELL_LON_DEG'],
+  'rail_data.js': ['RAIL_ROUTES', 'RAIL_STATIONS'],
+  'river_data.js': ['riverData']
+};
+function clearPrefectureGlobals(){
+  Object.keys(PREFECTURE_DATA_GLOBALS).forEach(function(file){
+    PREFECTURE_DATA_GLOBALS[file].forEach(function(name){ window[name] = undefined; });
+  });
+}
+
 var loadedPrefCode = null;
 
 // KNOWLEDGE_<XX> を取り出す。window[...] に無い場合（const/let で宣言されたファイルはwindowのプロパティにならない）は、
@@ -225,63 +243,69 @@ function loadPrefectureData(prefCode){
     }
     if(loadedPrefCode !== null){
       if(loadedPrefCode === code){ resolve(code); }
-      else { reject(new Error('このページでは県コード ' + loadedPrefCode + ' のデータを読み込み済みです。別の県はページを読み込み直してください。')); }
+      else { reject(new Error('このページでは別の県のデータを読み込み済みです。別の県はページを読み込み直してください。')); }
       return;
     }
     var xx = String(code).padStart(2, '0');
     var dir = 'data/pref' + xx + '/';
     var files = ['data_mesh.js', 'rail_data.js', 'river_data.js', 'knowledge_' + xx + '.js'];
-    var remaining = files.length, failed = false;
-    function fail(msg){ failed = true; reject(new Error(msg)); }
+
+    clearPrefectureGlobals();
+    if(typeof debugLog === 'function') debugLog('[loadPrefectureData] 読み込み開始:', dir);
+
+    var pending = files.length, failedPaths = [];
+    function settle(){
+      pending--;
+      if(pending > 0) return; // 4ファイルすべての成功/失敗が出そろうまで待つ
+      if(failedPaths.length > 0){
+        reject(new Error(failedPaths.join(', ') + ' を読み込めませんでした')); return;
+      }
+      // 4ファイルがそろった：必要な変数がすべて定義されているか確認
+      var missing = [];
+      Object.keys(PREFECTURE_DATA_GLOBALS).forEach(function(file){
+        PREFECTURE_DATA_GLOBALS[file].forEach(function(name){
+          if(name === 'RAIL_STATIONS') return; // 現状のコードでは使っていない（任意）
+          if(typeof window[name] === 'undefined') missing.push(file + ':' + name);
+        });
+      });
+      if(missing.length > 0){
+        console.error('[loadPrefectureData] ' + dir + ' のデータに必要な変数がありません: ' + missing.join(', '));
+        reject(new Error(dir + ' のデータの中身が想定と違います')); return;
+      }
+      // KNOWLEDGE_<XX> を取り出し、検証を通った問題を currentKnowledge（main.js）に格納する
+      var rawKnowledge = getKnowledgeGlobal(xx);
+      if(!Array.isArray(rawKnowledge)){
+        console.error('[loadPrefectureData] ' + dir + 'knowledge_' + xx + '.js に KNOWLEDGE_' + xx + '（配列）がありません');
+        reject(new Error('KNOWLEDGE_' + xx + ' が見つかりません（' + dir + 'knowledge_' + xx + '.js）')); return;
+      }
+      var validCount = setCurrentKnowledge(code, rawKnowledge);
+      if(validCount === 0){
+        console.error('[loadPrefectureData] KNOWLEDGE_' + xx + ' に有効な問題がありません');
+        reject(new Error('KNOWLEDGE_' + xx + ' に有効な問題がありません')); return;
+      }
+      loadedPrefCode = code;
+      if(typeof debugLog === 'function') debugLog('[loadPrefectureData] 読み込み完了:', dir, '有効な問題数', validCount);
+      resolve(code);
+    }
     files.forEach(function(name){
       var path = dir + name;
       var sc = document.createElement('script');
       sc.src = path;
       sc.async = false; // 追加した順に実行されるようにする
-      sc.onload = function(){
-        if(failed) return;
-        remaining--;
-        if(remaining > 0) return;
-        // 4ファイルがそろった：必要な変数が定義されているか確認
-        if(typeof TOKYO_RING === 'undefined' || typeof CAPITAL === 'undefined' || typeof MESH_RUNS_FLAT === 'undefined' ||
-           typeof RAIL_ROUTES === 'undefined' || typeof riverData === 'undefined'){
-          console.error('[loadPrefectureData] ' + dir + ' のデータの中身が想定と違います（data_mesh.js / rail_data.js / river_data.js）');
-          fail(dir + ' のデータの中身が想定と違います'); return;
-        }
-        // KNOWLEDGE_<XX> を取り出し、検証を通った問題を currentKnowledge（main.js）に格納する
-        var rawKnowledge = getKnowledgeGlobal(xx);
-        if(!Array.isArray(rawKnowledge)){
-          console.error('[loadPrefectureData] ' + dir + 'knowledge_' + xx + '.js に KNOWLEDGE_' + xx + '（配列）がありません');
-          fail('KNOWLEDGE_' + xx + ' が見つかりません（' + dir + 'knowledge_' + xx + '.js）'); return;
-        }
-        var validCount = setCurrentKnowledge(code, rawKnowledge);
-        if(validCount === 0){
-          console.error('[loadPrefectureData] KNOWLEDGE_' + xx + ' に有効な問題がありません');
-          fail('KNOWLEDGE_' + xx + ' に有効な問題がありません'); return;
-        }
-        loadedPrefCode = code;
-        resolve(code);
-      };
+      sc.onload = function(){ if(sc.parentNode) sc.parentNode.removeChild(sc); settle(); }; // 読み込み後はDOMから外す（変数は残る）
       sc.onerror = function(){
-        if(failed) return;
         console.error('[loadPrefectureData] 読み込みに失敗しました: ' + path);
-        fail(path + ' を読み込めませんでした');
+        failedPaths.push(path);
+        if(sc.parentNode) sc.parentNode.removeChild(sc);
+        settle();
       };
       document.head.appendChild(sc);
     });
   });
 }
 
-// 現時点では東京都（コード13）で開始する。
-loadPrefectureData(13).then(function(){
-  startGame();
-}).catch(function(err){
-  console.error(err);
-  var m = document.getElementById('loadingMsg');
-  if(m) m.textContent = '読み込みに失敗しました：' + err.message;
-  var o = document.getElementById('loadingOverlay');
-  if(o) o.classList.add('show');
-});
+// ページ読み込み後にゲームを開始する（県の決定 → 読み込み → 初期化は main.js の startGame）
+startGame();
 </script>
 
 </body>

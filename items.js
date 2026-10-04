@@ -66,7 +66,7 @@ function placeHintBoards(spawn){
       const d = randRange(CONFIG.HINT_BOARD_DIST_MIN_KM, CONFIG.HINT_BOARD_DIST_MAX_KM);
       const a = randRange(0, Math.PI*2);
       p = offsetLatLon(spawn.lat, spawn.lon, d, a);
-      if(isPassable(p.lat, p.lon) && isInsideTokyo(p.lat, p.lon)) break;
+      if(isPassable(p.lat, p.lon) && isInsidePrefecture(p.lat, p.lon)) break;
     }
     return { lat: p.lat, lon: p.lon, questionId: q.id, state: 'active' };
   });

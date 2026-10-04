@@ -44,6 +44,9 @@ const IMG_CAPITAL = loadImg('assets/capital.png'); // 元々アルファ有り�
 // パターンはcanvasの現在の変形（ctx.translate）に追従して敷き詰められるため、
 // 「ワールド座標の原点」を基準にtranslateしてから塗ることで、セルをまたいでも模様が継ぎ目なく連続する。
 const CONFIG = {
+  // ---- 県の選択・開発用 ----
+  FORCE_PREFECTURE_CODE: null, // 数値（例：13）を入れると、その県で開始（data/available_prefs.js の一覧に含まれる場合のみ有効）。null ならURLの?pref=NN、無ければ一覧からランダム
+  DEBUG: false,                // true の時だけ、開発確認用の console.log を出す（県コードなどは画面には一切出さない）
   ZOOM_FACTOR: 1.4,        // 画面表示の拡大率。緯度経度→画面座標の変換すべてに掛かる
   SPEED_NORMAL: 3.4,       // 通常地形（建物用地・道路・鉄道・農地・その他など）での移動速度（ズーム未適用の基準値）
   SPEED_FOREST_MULT: 0.5,  // 森林（0500）での速度倍率
@@ -79,9 +82,11 @@ const CONFIG = {
   PINCH_INVERT: false,     // true にすると指の開閉とズーム方向が逆になる（既定：指を広げる＝拡大）
 };
 let cameraZoom = 1.0;
+// 開発確認用のログ。CONFIG.DEBUG が真の時だけ出す（通常は何も出さない）
+function debugLog(){ if(CONFIG.DEBUG) console.log.apply(console, arguments); }
 
 // ==== 県ごとのワールド座標系 ====
-// 県データ（data/pref<コード>/data_mesh.js の TOKYO_RING 等）が読み込まれてから初めて決まる値なので、
+// 県データ（data/pref<コード>/data_mesh.js の PREFECTURE_RING 等）が読み込まれてから初めて決まる値なので、
 // ここでは宣言だけ行い、setupWorldCoordinates() が読み込み完了後に一度だけ値を入れる。
 // （他ファイルからは従来と同じ名前でそのまま参照できる）
 let lonMin=Infinity, lonMax=-Infinity, latMin=Infinity, latMax=-Infinity;
@@ -94,7 +99,7 @@ function worldY(lat){ return -(lat - REF_LAT) * PX_PER_DEG_LAT; }
 
 function setupWorldCoordinates(){
   lonMin=Infinity; lonMax=-Infinity; latMin=Infinity; latMax=-Infinity;
-  TOKYO_RING.forEach(([lon,lat])=>{
+  PREFECTURE_RING.forEach(([lon,lat])=>{
     if(lon<lonMin) lonMin=lon; if(lon>lonMax) lonMax=lon;
     if(lat<latMin) latMin=lat; if(lat>latMax) latMax=lat;
   });
@@ -203,12 +208,12 @@ function clampToBounds(lat, lon){
     lon: Math.max(lonMin-MARGIN_DEG, Math.min(lonMax+MARGIN_DEG, lon))
   };
 }
-// 東京都の輪郭（TOKYO_RING）に対するpoint-in-polygon判定（標準的なレイキャスティング法）。
-// TOKYO_RINGは[lon,lat]の配列。境界の外に出られないようにするための正式な判定で、
+// 東京都の輪郭（PREFECTURE_RING）に対するpoint-in-polygon判定（標準的なレイキャスティング法）。
+// PREFECTURE_RINGは[lon,lat]の配列。境界の外に出られないようにするための正式な判定で、
 // 従来のclampToBounds（単純な外接長方形）はこの後段の簡易フォールバックとしてそのまま残す。
-function isInsideTokyo(lat, lon){
+function isInsidePrefecture(lat, lon){
   let inside = false;
-  const ring = TOKYO_RING;
+  const ring = PREFECTURE_RING;
   for(let i=0, j=ring.length-1; i<ring.length; j=i++){
     const xi = ring[i][0], yi = ring[i][1];
     const xj = ring[j][0], yj = ring[j][1];
@@ -385,14 +390,14 @@ function update(dt){
   const dLon = (dx * speed) / PX_PER_DEG_LON;
   const dLat = -(dy * speed) / PX_PER_DEG_LAT;
   // X・Yを別々に判定することで、壁（進入不可地形・県境の外）に沿って滑るように移動できる。
-  // 地形の通行可否（isPassable）に加えて、東京都の輪郭の内側かどうか（isInsideTokyo）も両方満たす必要がある。
+  // 地形の通行可否（isPassable）に加えて、東京都の輪郭の内側かどうか（isInsidePrefecture）も両方満たす必要がある。
   if(dLon !== 0){
     const tryLon = state.player.lon + dLon;
-    if(isPassable(state.player.lat, tryLon) && isInsideTokyo(state.player.lat, tryLon)) state.player.lon = tryLon;
+    if(isPassable(state.player.lat, tryLon) && isInsidePrefecture(state.player.lat, tryLon)) state.player.lon = tryLon;
   }
   if(dLat !== 0){
     const tryLat = state.player.lat + dLat;
-    if(isPassable(tryLat, state.player.lon) && isInsideTokyo(tryLat, state.player.lon)) state.player.lat = tryLat;
+    if(isPassable(tryLat, state.player.lon) && isInsidePrefecture(tryLat, state.player.lon)) state.player.lat = tryLat;
   }
   const clamped = clampToBounds(state.player.lat, state.player.lon);
   state.player.lat = clamped.lat; state.player.lon = clamped.lon;
@@ -456,10 +461,10 @@ function draw(){
   });
   ctx.restore();
 
-  // 東京都：起動時に事前ラスター化した土地利用カラーマップを、TOKYO_RINGでクリップして描画
+  // 東京都：起動時に事前ラスター化した土地利用カラーマップを、PREFECTURE_RINGでクリップして描画
   ctx.save();
   ctx.beginPath();
-  TOKYO_RING.forEach(([lon,lat], i)=>{
+  PREFECTURE_RING.forEach(([lon,lat], i)=>{
     const [sx, sy] = toScreen(worldX(lon), worldY(lat));
     if(i===0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
   });
@@ -500,7 +505,7 @@ function draw(){
   ctx.restore();
   // 東京都の輪郭線
   ctx.beginPath();
-  TOKYO_RING.forEach(([lon,lat], i)=>{
+  PREFECTURE_RING.forEach(([lon,lat], i)=>{
     const [sx, sy] = toScreen(worldX(lon), worldY(lat));
     if(i===0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
   });
@@ -681,12 +686,83 @@ function setCurrentKnowledge(prefCode, raw){
   return currentKnowledge.length;
 }
 
-// ==== ゲーム開始（県データの動的読み込み完了後に、index.htmlから1回だけ呼ばれる） ====
-// 県データ（TOKYO_RING・MESH_RUNS_FLAT・RAIL_ROUTES・riverData 等）が必要な「1回だけの重い初期化」をここに集約。
+// ==== 県の決定 ====
+// 優先順位：① URLパラメータ ?pref=NN（例 ?pref=13 / ?pref=01）② CONFIG.FORCE_PREFECTURE_CODE
+//          ③ data/available_prefs.js の AVAILABLE_PREFECTURE_CODES からランダムに1つ
+// ①②は、一覧に含まれ、かつ excluded（今回すでに読み込みに失敗した県）に入っていない場合だけ採用する。
+// 採用できない場合は console.warn を出して次の優先順位へ。候補が1つも無ければ null を返す。
+function pickPrefectureCode(excluded){
+  excluded = excluded || [];
+  const all = (typeof AVAILABLE_PREFECTURE_CODES !== 'undefined' && Array.isArray(AVAILABLE_PREFECTURE_CODES))
+    ? AVAILABLE_PREFECTURE_CODES.filter(c => Number.isInteger(c)) : [];
+  const candidates = all.filter(c => !excluded.includes(c));
+  if(candidates.length === 0) return null;
+
+  // ① URLパラメータ
+  const param = new URLSearchParams(window.location.search).get('pref');
+  if(param !== null){
+    const n = /^\d{1,2}$/.test(param) ? Number(param) : NaN;
+    if(candidates.includes(n)) return n;
+    console.warn('[pref] ?pref=' + param + ' は利用できません（一覧にない、または読み込みに失敗した県）。別の県を選びます');
+  }
+  // ② 開発用の固定指定
+  const forced = CONFIG.FORCE_PREFECTURE_CODE;
+  if(forced !== null && forced !== undefined){
+    if(candidates.includes(forced)) return forced;
+    console.warn('[pref] CONFIG.FORCE_PREFECTURE_CODE=' + forced + ' は利用できません（一覧にない、または読み込みに失敗した県）。別の県を選びます');
+  }
+  // ③ ランダム
+  return candidates[Math.floor(Math.random() * candidates.length)];
+}
+
+// 県データが読めなかった時の表示（読み込み中の画面を使う。ゲームは開始しない）
+function showStartError(msg){
+  const m = document.getElementById('loadingMsg');
+  if(m) m.textContent = msg;
+  const o = document.getElementById('loadingOverlay');
+  if(o) o.classList.add('show');
+}
+
+// ==== ゲーム開始の入口：県を決める → データを動的に読み込む → 初期化してループ開始 ====
+// 選んだ県の4ファイルのどれかが読み込めなかったら、その県を今回の候補から外して選び直し、4ファイルを読み直す。
+// 候補が尽きたらエラーを出してゲームは開始しない。
+// ※ 県データ側のglobal変数は var 宣言なので、次の県の4ファイルが全部読み込まれれば上書きされる
+//   （失敗した県の途中までの変数は loadPrefectureData() の冒頭でも毎回 undefined に戻す）。
+let gameStarting = false;
+function startGame(){
+  if(gameStarted || gameStarting) return;
+  gameStarting = true;
+  const failed = [];
+  const attempt = ()=>{
+    const code = pickPrefectureCode(failed);
+    if(code === null){
+      const msg = failed.length
+        ? '読み込みに失敗しました：利用できる県のデータがすべて読み込めませんでした'
+        : '読み込みに失敗しました：利用できる県のデータがありません（data/available_prefs.js）';
+      console.error('[startGame] ' + msg);
+      showStartError(msg);
+      gameStarting = false;
+      return;
+    }
+    debugLog('[startGame] 試行する県コード:', code, '（失敗済み:', failed.join(',') || 'なし', '）');
+    loadPrefectureData(code).then(
+      ()=>{ initPrefectureGame(); },                 // 成功：ワールド構築〜ループ開始
+      (err)=>{                                       // 失敗：その県を外して選び直す
+        console.error(err);
+        failed.push(code);
+        attempt();
+      }
+    );
+  };
+  attempt();
+}
+
+// ==== 県データの読み込み完了後の初期化（startGame から1回だけ呼ばれる） ====
+// 県データ（PREFECTURE_RING・MESH_RUNS_FLAT・RAIL_ROUTES・riverData 等）が必要な「1回だけの重い初期化」をここに集約。
 // resetGame()（もう一度プレイ）が呼ぶ initGame() は、ラン単位の状態（位置・宝箱・霧・タイマー）の初期化だけを担当し、
 // 地形ラスター等は作り直さない。
 let gameStarted = false;
-function startGame(){
+function initPrefectureGame(){
   if(gameStarted) return;
   gameStarted = true;
   setupWorldCoordinates(); // ワールド座標系（県データのポリゴンから決まる）

@@ -59,7 +59,7 @@ function drawMinimap(pWX, pWY){
   ctx.fillRect(x0, y0, MINI_W, MINI_H);
   ctx.fillStyle = '#3f6b45'; // 陸地
   ctx.beginPath();
-  TOKYO_RING.forEach(([lon,lat], i)=>{
+  PREFECTURE_RING.forEach(([lon,lat], i)=>{
     const [mx, my] = toMini(worldX(lon), worldY(lat));
     if(i===0) ctx.moveTo(mx, my); else ctx.lineTo(mx, my);
   });
