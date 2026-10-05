@@ -4,32 +4,21 @@
 // ======================================================================
 
 const TEXTURE_TILE_CELLS = 3; // 128pxのテクスチャ1枚を何メッシュセル分（何百m四方）として敷くか
-let PATTERN_BUILDING = null, PATTERN_WATER = null, PATTERN_FOREST = null;
-let PATTERN_RICEFIELD = null, PATTERN_VEGGARDEN = null, PATTERN_WASTELAND = null,
-    PATTERN_GOLF = null, PATTERN_BEACH = null;
-let PATTERN_FACTORY = null, PATTERN_HOUSE = null, PATTERN_HOUSES = null, PATTERN_PARK = null;
 const TEXTURE_IMAGES = Object.create(null);
 let textureLoadFinished = 0;
 const TEXTURE_IMAGE_COUNT = 12;
-function loadTexture(src, setPattern){
+// テクスチャ画像1枚の読み込み。読み込めたら TEXTURE_IMAGES に入れ、成功・失敗にかかわらず完了数を数える。
+// 12枚すべてが出そろったら、地形タイル用のパターンを作る（tileOnTexturesProgress）。
+function loadTexture(src){
   const img = new Image();
   img.onload = ()=>{
     TEXTURE_IMAGES[src] = img;
     textureLoadFinished++;
-    try {
-      const pattern = ctx.createPattern(img, 'repeat');
-      // 128px（テクスチャの元解像度）＝ TEXTURE_TILE_CELLS セル分のワールドpxにスケールする
-      // （引き伸ばし拡大を避けるため、セルの実サイズに合わせて縮小方向にスケールする）
-      const scaleX = (TEXTURE_TILE_CELLS * MESH_CELL_LON_DEG * PX_PER_DEG_LON) / img.naturalWidth;
-      const scaleY = (TEXTURE_TILE_CELLS * MESH_CELL_LAT_DEG * PX_PER_DEG_LAT) / img.naturalHeight;
-      pattern.setTransform(new DOMMatrix([scaleX, 0, 0, scaleY, 0, 0]));
-      setPattern(pattern);
-    } catch(e){ /* createPattern失敗時は何もしない＝下地のラスター単色のまま表示される */ }
-    tryBuildTexturedLanduseRaster();
+    tileOnTexturesProgress();
   };
   img.onerror = ()=>{
     textureLoadFinished++;
-    tryBuildTexturedLanduseRaster();
+    tileOnTexturesProgress();
   };
   img.src = src;
 }
@@ -37,18 +26,8 @@ function loadTexture(src, setPattern){
 // onload内でMESH_CELL_LON_DEG・PX_PER_DEG_LON等（県データ読み込み後に確定する値）を使うため、
 // 県データの読み込み完了後に始める。
 function startTextureLoads(){
-  loadTexture('assets/building.webp', p=>{ PATTERN_BUILDING = p; });
-  loadTexture('assets/water.webp', p=>{ PATTERN_WATER = p; });
-  loadTexture('assets/forest.webp', p=>{ PATTERN_FOREST = p; });
-  loadTexture('assets/ricefield.webp', p=>{ PATTERN_RICEFIELD = p; });
-  loadTexture('assets/vegetablegarden.webp', p=>{ PATTERN_VEGGARDEN = p; });
-  loadTexture('assets/wasteland.webp', p=>{ PATTERN_WASTELAND = p; });
-  loadTexture('assets/golf.webp', p=>{ PATTERN_GOLF = p; });
-  loadTexture('assets/beach.webp', p=>{ PATTERN_BEACH = p; });
-  loadTexture('assets/factory.webp', p=>{ PATTERN_FACTORY = p; });
-  loadTexture('assets/house.webp', p=>{ PATTERN_HOUSE = p; });
-  loadTexture('assets/houses.webp', p=>{ PATTERN_HOUSES = p; });
-  loadTexture('assets/park.webp', p=>{ PATTERN_PARK = p; });
+  ['building', 'water', 'forest', 'ricefield', 'vegetablegarden', 'wasteland', 'golf', 'beach', 'factory', 'house', 'houses', 'park']
+    .forEach(name => loadTexture('assets/' + name + '.webp'));
 }
 
 // 探検家・宝箱オープン演出は、実アルファ入りwebm動画から抽出したフレームを
@@ -188,37 +167,46 @@ function landuseGridValue(code){
   return g.data[row * g.cols + col];
 }
 
-// 格子の全マスを、メッシュコードの昇順（＝従来のMapの挿入順＝ランレングスの順）で fn(meshCode, v) に渡す。v は 1〜（LANDUSE_ORDER の index+1）。
-// 単色ラスター・テクスチャ焼き込みは、重なり部分の塗り順で見た目が変わるため、従来と同じ順序で描く必要がある。
-function forEachLanduseCell(fn){
+// 格子のうち、全国通しの格子番号が [wRowMin..wRowMax]×[wColMin..wColMax] の範囲にあるマスだけを、メッシュコードの昇順
+// （＝従来のMapの挿入順＝ランレングスの順）で fn(meshCode, v) に渡す。v は 1〜（LANDUSE_ORDER の index+1）。
+// 呼ばれる直前に、そのマスの南西端の緯度経度を _cellLat / _cellLon に入れる（meshCodeToSWLatLon と同じ式。文字列変換を避ける高速化）。
+// 土地利用の描画は、重なり部分の塗り順で見た目が変わるため、従来と同じ順序（コード昇順）で描く必要がある。
+let _cellLat = 0, _cellLon = 0;
+function forEachLanduseCellInWindow(wRowMin, wRowMax, wColMin, wColMax, fn){
   const g = landuseGrid;
   if(!g) return;
   const data = g.data, cols = g.cols, row0 = g.row0, col0 = g.col0;
-  const rowMax = row0 + g.rows - 1, colMax = col0 + cols - 1;
-  const pMin = Math.floor(row0 / 800), pMax = Math.floor(rowMax / 800);
-  const qMin = Math.floor(col0 / 800), qMax = Math.floor(colMax / 800);
+  const rowLo = Math.max(row0, wRowMin), rowHi = Math.min(row0 + g.rows - 1, wRowMax);
+  const colLo = Math.max(col0, wColMin), colHi = Math.min(col0 + cols - 1, wColMax);
+  if(rowLo > rowHi || colLo > colHi) return;
+  const pMin = Math.floor(rowLo / 800), pMax = Math.floor(rowHi / 800);
+  const qMin = Math.floor(colLo / 800), qMax = Math.floor(colHi / 800);
   for(let p = pMin; p <= pMax; p++){
     for(let q = qMin; q <= qMax; q++){
       for(let r = 0; r < 8; r++){
         const rowR = (p*8 + r) * 100;
-        if(rowR + 99 < row0 || rowR > rowMax) continue;
+        if(rowR + 99 < rowLo || rowR > rowHi) continue;
         for(let c = 0; c < 8; c++){
           const colC = (q*8 + c) * 100;
-          if(colC + 99 < col0 || colC > colMax) continue;
+          if(colC + 99 < colLo || colC > colHi) continue;
           for(let m = 0; m < 10; m++){
             const rowM = rowR + m*10;
-            if(rowM + 9 < row0 || rowM > rowMax) continue;
+            if(rowM + 9 < rowLo || rowM > rowHi) continue;
             for(let n = 0; n < 10; n++){
               const colN = colC + n*10;
-              if(colN + 9 < col0 || colN > colMax) continue;
+              if(colN + 9 < colLo || colN > colHi) continue;
               for(let m2 = 0; m2 < 10; m2++){
                 const row = rowM + m2;
-                if(row < row0 || row > rowMax) continue;
+                if(row < rowLo || row > rowHi) continue;
+                const aMin = r*5 + m*0.5 + m2*0.05;
+                const swLat = p*(40/60) + aMin/60;
                 for(let n2 = 0; n2 < 10; n2++){
                   const col = colN + n2;
-                  if(col < col0 || col > colMax) continue;
+                  if(col < colLo || col > colHi) continue;
                   const v = data[(row - row0) * cols + (col - col0)];
                   if(v === 0) continue;
+                  const b = c*0.125 + n*0.0125 + n2*0.00125;
+                  _cellLat = swLat; _cellLon = 100 + q + b;
                   fn(p*1e8 + q*1e6 + r*1e5 + c*1e4 + m*1e3 + n*100 + m2*10 + n2, v);
                 }
               }
@@ -228,6 +216,12 @@ function forEachLanduseCell(fn){
       }
     }
   }
+}
+// 格子の全マスを昇順で fn(meshCode, v) に渡す（検証用ツール向けの薄いラッパー）
+function forEachLanduseCell(fn){
+  const g = landuseGrid;
+  if(!g) return;
+  forEachLanduseCellInWindow(g.row0, g.row0 + g.rows - 1, g.col0, g.col0 + g.cols - 1, fn);
 }
 
 function getLanduseCode(lat, lon){
@@ -244,151 +238,361 @@ function isPassable(lat, lon){
 
 // ==== 東京都以外の都道府県（背景用・簡略化ポリゴン, dataofjapan/land由来） ====
 // 各要素は [lon,lat,lon,lat,...] のフラット配列（穴なし・単純な輪郭のみ、地名等の装飾なし）
-const LANDUSE_RASTER_SCALE = 0.4; // ワールド座標に対する縮小率（画質より起動時間・メモリを優先）
-let landuseRasterCanvas = null, landuseRasterOriginX = 0, landuseRasterOriginY = 0;
-function buildLanduseRaster(){
-  const originX = worldX(lonMin), originY = worldY(latMax); // 東京都bboxの左上（余白なし）
+// ======================================================================
+// 地形タイル（小さなcanvasのキャッシュ）
+// 以前は県全体を1枚の巨大canvas（単色0.4倍＋テクスチャ焼き込み1.0倍）に起動時に描いていたが、県が大きいとメモリが破綻するため、
+// 「画面に映る範囲のタイルだけを、landuseGrid から必要な時に描いてキャッシュする」方式にした。
+//   タイル(tx,ty)のワールド範囲 = 原点(県のbbox角) + [tx*T,(tx+1)*T) × [ty*T,(ty+1)*T)    ※T = CONFIG.TILE_WORLD_PX（5の倍数）
+//   ① テクスチャタイル：T×T canvas px（1ワールドpx＝1canvas px）。単色の下地の上に、テクスチャのパターンをセルごとに塗ったもの
+//   ② 単色タイル：T×0.4 canvas px（0.4倍。旧・単色ラスターと同じ解像度）
+// 描画内容は旧ラスターと同じ手順（セルごとのfillRect、重ね代 ceil(幅)+1、丸めなし、コード昇順）を踏襲する。
+// ======================================================================
+const SOLID_TILE_SCALE = 0.4;   // 単色タイルの解像度（ワールド1pxあたりのcanvas px）
+const TEX_TILE_SCALE = 1.0;     // テクスチャタイルの解像度（1ワールドpx＝1canvas px）
+const TILE_SCRATCH_MARGIN = 2;  // 単色の下地を2.5倍に拡大する時、タイル境界で旧ラスターと同じ補間になるよう、周囲に付ける余白（単色px）
+const TILE_POOL_MAX = 24;       // 再利用待ちのcanvasを何枚まで持つか（種類ごと）。超えた分は width/height=0 で解放する
+
+let tileWorldPx = 200, tileSolidPx = 80, tileTexPx = 200;
+let tileOriginX = 0, tileOriginY = 0, tilesX = 0, tilesY = 0;
+let texTiles = new Map();    // key(=ty*tilesX+tx) → { cv, last }  テクスチャタイル
+let solidTiles = new Map();  // 単色タイル
+let tileEmpty = new Set();   // セルが1つも無いタイル（canvasを作らない）
+let tilePoolTex = [], tilePoolSolid = []; // 破棄したcanvasの再利用待ち
+let tileScratch = null;      // 下地用の作業canvas（単色px (80+2×余白)²）
+let tilePatterns = null;     // テクスチャ12種のパターン {画像パス: CanvasPattern}。null＝まだ作っていない
+let tileTexturesReady = false; // パターンが1つ以上作れた（＝テクスチャタイルを焼ける）
+let tileFrame = 0;           // draw のたびに増える。タイルの「最終使用フレーム」（LRU）に使う
+let tileSolidColors = null;  // v(1〜) → 色
+let tileFileForCode = null;  // 土地利用カテゴリ → テクスチャ画像パス
+const tileStats = { canvasesCreated: 0, texBakes: 0, texBakeMs: 0, texBakeMaxMs: 0, solidBuilds: 0, solidMs: 0, evictionsTex: 0, evictionsSolid: 0, prebakeMs: 0, prebakeTiles: 0 };
+
+function takeTileCanvas(pool, size){
+  let cv = pool.pop();
+  if(!cv){
+    cv = document.createElement('canvas');
+    cv.width = size; cv.height = size;
+    cv._ctx = cv.getContext('2d');
+    tileStats.canvasesCreated++;
+  } else {
+    cv._ctx.setTransform(1, 0, 0, 1, 0, 0);
+    cv._ctx.clearRect(0, 0, size, size);
+  }
+  return cv;
+}
+function disposeTileCanvas(cv){ cv.width = 0; cv.height = 0; cv._ctx = null; } // width/height=0 でメモリを確実に解放（iOS Safari対策）
+function releaseTileCanvas(pool, cv){ if(pool.length < TILE_POOL_MAX) pool.push(cv); else disposeTileCanvas(cv); }
+
+// 県データを読み込み直す時（initTerrain）・終了時：キャッシュ・プール・作業canvasをすべて破棄する
+function disposeTerrainTiles(){
+  for(const e of texTiles.values()) disposeTileCanvas(e.cv);
+  for(const e of solidTiles.values()) disposeTileCanvas(e.cv);
+  tilePoolTex.forEach(disposeTileCanvas); tilePoolSolid.forEach(disposeTileCanvas);
+  if(tileScratch) disposeTileCanvas(tileScratch);
+  texTiles = new Map(); solidTiles = new Map(); tileEmpty = new Set();
+  tilePoolTex = []; tilePoolSolid = []; tileScratch = null;
+  tilePatterns = null; tileTexturesReady = false; tileFrame = 0;
+  for(const k of Object.keys(tileStats)) tileStats[k] = 0;
+}
+
+function initTileSystem(){
+  tileWorldPx = Math.round((CONFIG.TILE_WORLD_PX || 200) / 5) * 5; // 5の倍数に丸める（単色タイルの解像度0.4倍で整数pxになるため）
+  if(!(tileWorldPx >= 5)) tileWorldPx = 200;
+  tileSolidPx = Math.round(tileWorldPx * SOLID_TILE_SCALE);
+  tileTexPx = Math.round(tileWorldPx * TEX_TILE_SCALE);
+  tileOriginX = worldX(lonMin); tileOriginY = worldY(latMax); // 旧ラスターと同じ原点（県のbbox左上、余白なし）
   const endX = worldX(lonMax), endY = worldY(latMin);
-  const w = Math.ceil((endX-originX) * LANDUSE_RASTER_SCALE) + 2;
-  const h = Math.ceil((endY-originY) * LANDUSE_RASTER_SCALE) + 2;
-  const rc = document.createElement('canvas');
-  rc.width = w; rc.height = h;
-  const rctx = rc.getContext('2d');
-  const cellWpx = Math.ceil(MESH_CELL_LON_DEG * PX_PER_DEG_LON * LANDUSE_RASTER_SCALE) + 1;
-  const cellHpx = Math.ceil(MESH_CELL_LAT_DEG * PX_PER_DEG_LAT * LANDUSE_RASTER_SCALE) + 1;
-  forEachLanduseCell((meshCode, v)=>{
-    const [swLat, swLon] = meshCodeToSWLatLon(meshCode);
-    const cLat = swLat + MESH_CELL_LAT_DEG/2, cLon = swLon + MESH_CELL_LON_DEG/2;
-    const wx = worldX(cLon), wy = worldY(cLat);
-    const rx = (wx - originX) * LANDUSE_RASTER_SCALE;
-    const ry = (wy - originY) * LANDUSE_RASTER_SCALE;
-    rctx.fillStyle = LANDUSE_COLORS[LANDUSE_ORDER[v - 1]] || '#3f6b45';
-    rctx.fillRect(rx - cellWpx/2, ry - cellHpx/2, cellWpx, cellHpx);
-  });
-  landuseRasterCanvas = rc;
-  landuseRasterOriginX = originX; landuseRasterOriginY = originY;
+  tilesX = Math.ceil((endX - tileOriginX + 5) / tileWorldPx);
+  tilesY = Math.ceil((endY - tileOriginY + 5) / tileWorldPx);
+  tileScratch = document.createElement('canvas');
+  tileScratch.width = tileSolidPx + 2 * TILE_SCRATCH_MARGIN; tileScratch.height = tileScratch.width;
+  tileScratch._ctx = tileScratch.getContext('2d');
+  tileStats.canvasesCreated++;
+  tileSolidColors = [''];
+  for(let i = 0; i < LANDUSE_ORDER.length; i++) tileSolidColors.push(LANDUSE_COLORS[LANDUSE_ORDER[i]] || '#3f6b45');
+  // 土地利用カテゴリ → テクスチャ画像（旧・焼き込みと同じ対応）
+  tileFileForCode = Object.create(null);
+  tileFileForCode[LANDUSE_HIGHRISE] = 'assets/building.webp';
+  tileFileForCode[LANDUSE_FACTORY] = 'assets/factory.webp';
+  tileFileForCode[LANDUSE_LOWRISE] = 'assets/house.webp';
+  tileFileForCode[LANDUSE_LOWRISE_DENSE] = 'assets/houses.webp';
+  tileFileForCode[LANDUSE_RIVER] = 'assets/water.webp';
+  tileFileForCode[LANDUSE_FOREST] = 'assets/forest.webp';
+  tileFileForCode[LANDUSE_RICE] = 'assets/ricefield.webp';
+  tileFileForCode[LANDUSE_OTHER_AGRI] = 'assets/vegetablegarden.webp';
+  tileFileForCode[LANDUSE_WASTELAND] = 'assets/wasteland.webp';
+  tileFileForCode[LANDUSE_GOLF] = 'assets/golf.webp';
+  tileFileForCode[LANDUSE_BEACH] = 'assets/beach.webp';
+  tileFileForCode[LANDUSE_PARK] = 'assets/park.webp';
 }
 
-// テクスチャ用の軽量グリッド（起動時に1回だけ構築）：行・列の整数インデックスで即座に引けるようにし、
-// 毎フレームの描画ループで文字列ベースのメッシュコード計算をしないようにするための最適化。
-// 当たり判定側（isPassable/getLanduseCode）は landuseGrid を直接使うので、判定ロジックには一切影響しない。
-// ※ textureGrid は県境bboxの角を原点にした別の位置合わせの格子で、現状どこからも読まれていない（landuseGrid から導出して作るだけ）。
-let textureGrid = null, textureGridCols = 0, textureGridRows = 0;
-let TEXTURE_GRID_LON0 = 0, TEXTURE_GRID_LAT0 = 0; // initTerrain()で lonMin / latMin を入れる
-function buildTextureGrid(){
-  textureGridCols = Math.ceil((lonMax - lonMin) / MESH_CELL_LON_DEG) + 2;
-  textureGridRows = Math.ceil((latMax - latMin) / MESH_CELL_LAT_DEG) + 2;
-  // 0=対象外, 1=高層建物, 2=工場, 3=低層建物, 4=低層建物(密集地), 5=河川湖沼, 6=森林,
-  // 7=田, 8=その他農地, 9=荒地, 10=ゴルフ場, 11=海浜, 12=公園緑地
-  textureGrid = new Uint8Array(textureGridCols * textureGridRows);
-  forEachLanduseCell((meshCode, gv)=>{
-    const code = LANDUSE_ORDER[gv - 1];
-    let v = 0;
-    if(code === LANDUSE_HIGHRISE) v = 1;
-    else if(code === LANDUSE_FACTORY) v = 2;
-    else if(code === LANDUSE_LOWRISE) v = 3;
-    else if(code === LANDUSE_LOWRISE_DENSE) v = 4;
-    else if(code === LANDUSE_RIVER) v = 5;
-    else if(code === LANDUSE_FOREST) v = 6;
-    else if(code === LANDUSE_RICE) v = 7;
-    else if(code === LANDUSE_OTHER_AGRI) v = 8;
-    else if(code === LANDUSE_WASTELAND) v = 9;
-    else if(code === LANDUSE_GOLF) v = 10;
-    else if(code === LANDUSE_BEACH) v = 11;
-    else if(code === LANDUSE_PARK) v = 12;
-    if(v === 0) return;
-    const [swLat, swLon] = meshCodeToSWLatLon(meshCode);
-    const col = Math.round((swLon - TEXTURE_GRID_LON0) / MESH_CELL_LON_DEG);
-    const row = Math.round((swLat - TEXTURE_GRID_LAT0) / MESH_CELL_LAT_DEG);
-    if(col >= 0 && col < textureGridCols && row >= 0 && row < textureGridRows){
-      textureGrid[row*textureGridCols + col] = v;
-    }
-  });
-}
-
-// ==== テクスチャ付き土地利用ラスターを起動時に一度だけ焼き付ける ==== 
-// 元の土地利用ラスターを下地にコピーし、対応カテゴリだけテクスチャを重ねる。
-// 以後の毎フレーム処理は main.js の drawImage だけになる。
-const TEXTURED_LANDUSE_RASTER_SCALE = 1.0;
-let texturedLanduseRasterCanvas = null;
-let texturedLanduseRasterOriginX = 0, texturedLanduseRasterOriginY = 0;
-let texturedLanduseRasterBuildStarted = false;
-function tryBuildTexturedLanduseRaster(){
-  if(texturedLanduseRasterBuildStarted || textureLoadFinished < TEXTURE_IMAGE_COUNT) return;
-  if(!landuseRasterCanvas || !landuseGrid || !LANDUSE_ORDER) return;
-  texturedLanduseRasterBuildStarted = true;
+// 12枚の画像がそろったら、テクスチャのパターンを作る（旧・焼き込みと同じ createPattern ＋ setTransform）。
+// パターンは作業canvasのctxから作るが、どのタイルのctxでも使える。基準位置は塗る時のctxの座標系（＝translateで固定したワールド座標）。
+function tileOnTexturesProgress(){
+  if(textureLoadFinished < TEXTURE_IMAGE_COUNT || tilePatterns || !tileScratch) return;
+  tilePatterns = Object.create(null);
+  let n = 0;
   try {
-    const rc = document.createElement('canvas');
-    rc.width = Math.ceil(landuseRasterCanvas.width / LANDUSE_RASTER_SCALE);
-    rc.height = Math.ceil(landuseRasterCanvas.height / LANDUSE_RASTER_SCALE);
-    const rctx = rc.getContext('2d');
-    // 画像未読込・読込失敗カテゴリがあっても、単色の土地利用地図を維持する。
-    rctx.drawImage(
-    landuseRasterCanvas,
-    0,
-    0,
-    landuseRasterCanvas.width / LANDUSE_RASTER_SCALE,
-    landuseRasterCanvas.height / LANDUSE_RASTER_SCALE
-    );
-
-    const patternForFile = Object.create(null);
-    for(const src of [
-      'assets/building.webp', 'assets/factory.webp', 'assets/house.webp', 'assets/houses.webp', 'assets/water.webp',
-      'assets/forest.webp', 'assets/ricefield.webp', 'assets/vegetablegarden.webp', 'assets/wasteland.webp',
-      'assets/golf.webp', 'assets/beach.webp', 'assets/park.webp'
-    ]){
+    for(const src of Object.keys(TEXTURE_IMAGES)){
       const img = TEXTURE_IMAGES[src];
-      if(!img || !img.naturalWidth || !img.naturalHeight) continue;
-      const pattern = rctx.createPattern(img, 'repeat');
+      if(!img || !img.naturalWidth) continue;
+      const pattern = tileScratch._ctx.createPattern(img, 'repeat');
       if(!pattern) continue;
-      const sx = (TEXTURE_TILE_CELLS * MESH_CELL_LON_DEG * PX_PER_DEG_LON * TEXTURED_LANDUSE_RASTER_SCALE) / img.naturalWidth;
-      const sy = (TEXTURE_TILE_CELLS * MESH_CELL_LAT_DEG * PX_PER_DEG_LAT * TEXTURED_LANDUSE_RASTER_SCALE) / img.naturalHeight;
+      const sx = (TEXTURE_TILE_CELLS * MESH_CELL_LON_DEG * PX_PER_DEG_LON * TEX_TILE_SCALE) / img.naturalWidth;
+      const sy = (TEXTURE_TILE_CELLS * MESH_CELL_LAT_DEG * PX_PER_DEG_LAT * TEX_TILE_SCALE) / img.naturalHeight;
       pattern.setTransform(new DOMMatrix([sx, 0, 0, sy, 0, 0]));
-      patternForFile[src] = pattern;
+      tilePatterns[src] = pattern; n++;
     }
-    const fileForCode = Object.create(null);
-    fileForCode[LANDUSE_HIGHRISE] = 'assets/building.webp';
-    fileForCode[LANDUSE_FACTORY] = 'assets/factory.webp';
-    fileForCode[LANDUSE_LOWRISE] = 'assets/house.webp';
-    fileForCode[LANDUSE_LOWRISE_DENSE] = 'assets/houses.webp';
-    fileForCode[LANDUSE_RIVER] = 'assets/water.webp';
-    fileForCode[LANDUSE_FOREST] = 'assets/forest.webp';
-    fileForCode[LANDUSE_RICE] = 'assets/ricefield.webp';
-    fileForCode[LANDUSE_OTHER_AGRI] = 'assets/vegetablegarden.webp';
-    fileForCode[LANDUSE_WASTELAND] = 'assets/wasteland.webp';
-    fileForCode[LANDUSE_GOLF] = 'assets/golf.webp';
-    fileForCode[LANDUSE_BEACH] = 'assets/beach.webp';
-    fileForCode[LANDUSE_PARK] = 'assets/park.webp';
-
-    const originX = landuseRasterOriginX, originY = landuseRasterOriginY;
-    const cellWpx = Math.ceil(MESH_CELL_LON_DEG * PX_PER_DEG_LON * TEXTURED_LANDUSE_RASTER_SCALE) + 1;
-    const cellHpx = Math.ceil(MESH_CELL_LAT_DEG * PX_PER_DEG_LAT * TEXTURED_LANDUSE_RASTER_SCALE) + 1;
-    forEachLanduseCell((meshCode, gv)=>{
-      const code = LANDUSE_ORDER[gv - 1];
-      const file = fileForCode[code];
-      const pattern = file && patternForFile[file];
-      if(!pattern) return;
-      const [swLat, swLon] = meshCodeToSWLatLon(meshCode);
-      const wx = worldX(swLon + MESH_CELL_LON_DEG / 2);
-      const wy = worldY(swLat + MESH_CELL_LAT_DEG / 2);
-      const rx = (wx - originX) * TEXTURED_LANDUSE_RASTER_SCALE;
-      const ry = (wy - originY) * TEXTURED_LANDUSE_RASTER_SCALE;
-      rctx.fillStyle = pattern;
-      rctx.fillRect(rx - cellWpx/2, ry - cellHpx/2, cellWpx, cellHpx);
-    });
-    texturedLanduseRasterCanvas = rc;
-    texturedLanduseRasterOriginX = originX;
-    texturedLanduseRasterOriginY = originY;
   } catch(e){
-    // 失敗した場合はnullのままにして、main.js側で通常ラスターへフォールバックする。
-    texturedLanduseRasterCanvas = null;
+    console.warn('[terrain] テクスチャのパターン作成に失敗しました。単色タイルのままにします', e);
+    n = 0; tilePatterns = Object.create(null);
+  }
+  tileTexturesReady = n > 0;
+}
+function terrainTexturesFinished(){ return textureLoadFinished >= TEXTURE_IMAGE_COUNT; }
+
+// ---- タイルに重なるセルの範囲 ----
+// タイルのワールド範囲（＋セル半分＋余白）に中心がある可能性のあるセルの、全国通しの格子番号の範囲（少し広めに取る）。
+// セルの描画サイズは ceil(セル幅px×倍率)+1 なので、はみ出す分は余白で拾い、はみ出した部分はcanvasのクリップに任せる。
+let _wRowMin = 0, _wRowMax = 0, _wColMin = 0, _wColMax = 0;
+function tileCellWindow(tx, ty){
+  const cellWorldW = Math.max((Math.ceil(MESH_CELL_LON_DEG * PX_PER_DEG_LON * TEX_TILE_SCALE) + 1) / TEX_TILE_SCALE,
+                              (Math.ceil(MESH_CELL_LON_DEG * PX_PER_DEG_LON * SOLID_TILE_SCALE) + 1) / SOLID_TILE_SCALE);
+  const cellWorldH = Math.max((Math.ceil(MESH_CELL_LAT_DEG * PX_PER_DEG_LAT * TEX_TILE_SCALE) + 1) / TEX_TILE_SCALE,
+                              (Math.ceil(MESH_CELL_LAT_DEG * PX_PER_DEG_LAT * SOLID_TILE_SCALE) + 1) / SOLID_TILE_SCALE);
+  const m = TILE_SCRATCH_MARGIN / SOLID_TILE_SCALE; // 下地の余白（ワールドpx）
+  const wx0 = tileOriginX + tx * tileWorldPx - m - cellWorldW, wx1 = tileOriginX + (tx + 1) * tileWorldPx + m + cellWorldW;
+  const wy0 = tileOriginY + ty * tileWorldPx - m - cellWorldH, wy1 = tileOriginY + (ty + 1) * tileWorldPx + m + cellWorldH;
+  const lonA = REF_LON + wx0 / PX_PER_DEG_LON, lonB = REF_LON + wx1 / PX_PER_DEG_LON;
+  const latA = REF_LAT - wy1 / PX_PER_DEG_LAT, latB = REF_LAT - wy0 / PX_PER_DEG_LAT; // ワールドYは北が小さい
+  _wColMin = Math.floor((lonA - 100) * 800) - 1; _wColMax = Math.floor((lonB - 100) * 800) + 1; // 経度: col = (lon-100)×800
+  _wRowMin = Math.floor(latA * 1200) - 1;        _wRowMax = Math.floor(latB * 1200) + 1;        // 緯度: row = lat×1200
+}
+// タイルの範囲に、セルが1つでもあるか（無ければ canvas を作らない）
+function tileHasCells(tx, ty){
+  const g = landuseGrid;
+  if(!g) return false;
+  tileCellWindow(tx, ty);
+  const rowLo = Math.max(g.row0, _wRowMin), rowHi = Math.min(g.row0 + g.rows - 1, _wRowMax);
+  const colLo = Math.max(g.col0, _wColMin), colHi = Math.min(g.col0 + g.cols - 1, _wColMax);
+  for(let row = rowLo; row <= rowHi; row++){
+    const base = (row - g.row0) * g.cols - g.col0;
+    for(let col = colLo; col <= colHi; col++) if(g.data[base + col] !== 0) return true;
+  }
+  return false;
+}
+
+// ---- 単色セルの描画（従来の単色ラスターと同じ式）----
+// c2d の大きさは (N + 2m)² 。ワールド→canvas：x = (wx - 原点X)×0.4 - N×tx + m（整数のtranslateだけでずらす）
+function paintSolidCells(c2d, tx, ty, m){
+  const S = SOLID_TILE_SCALE;
+  const cellWpx = Math.ceil(MESH_CELL_LON_DEG * PX_PER_DEG_LON * S) + 1;
+  const cellHpx = Math.ceil(MESH_CELL_LAT_DEG * PX_PER_DEG_LAT * S) + 1;
+  c2d.setTransform(1, 0, 0, 1, m - tileSolidPx * tx, m - tileSolidPx * ty);
+  tileCellWindow(tx, ty);
+  let last = '';
+  forEachLanduseCellInWindow(_wRowMin, _wRowMax, _wColMin, _wColMax, (meshCode, v)=>{
+    const wx = worldX(_cellLon + MESH_CELL_LON_DEG/2), wy = worldY(_cellLat + MESH_CELL_LAT_DEG/2);
+    const rx = (wx - tileOriginX) * S, ry = (wy - tileOriginY) * S;
+    const color = tileSolidColors[v];
+    if(color !== last){ c2d.fillStyle = color; last = color; }
+    c2d.fillRect(rx - cellWpx/2, ry - cellHpx/2, cellWpx, cellHpx);
+  });
+}
+
+// 単色タイル（80×80）。無ければ同期で作る（軽い）。セルが無いタイルは null。
+function getSolidTile(tx, ty, key){
+  const e = solidTiles.get(key);
+  if(e){ e.last = tileFrame; return e.cv; }
+  if(tileEmpty.has(key)) return null;
+  if(!tileHasCells(tx, ty)){ tileEmpty.add(key); return null; }
+  const t0 = performance.now();
+  const cv = takeTileCanvas(tilePoolSolid, tileSolidPx);
+  paintSolidCells(cv._ctx, tx, ty, 0);
+  solidTiles.set(key, { cv, last: tileFrame });
+  evictTiles(solidTiles, tilePoolSolid, CONFIG.TILE_CACHE_MAX_SOLID, 'evictionsSolid');
+  tileStats.solidBuilds++; tileStats.solidMs += performance.now() - t0;
+  return cv;
+}
+
+// テクスチャタイル（200×200）を焼く。従来のテクスチャ焼き込みと同じ手順：
+//   ① 単色の下地を2.5倍に拡大して敷く（旧ラスターと同じ補間になるよう、周囲の余白つきの作業canvasを使う）
+//   ② translate(-タイル原点) でワールド座標のまま、セルごとにパターンをfillRect（パターンの基準がワールド座標に固定され、タイル境界で模様がずれない）
+// セルが無いタイルは null。
+function bakeTextureTile(tx, ty, key){
+  if(tileEmpty.has(key)) return null;
+  if(!tileHasCells(tx, ty)){ tileEmpty.add(key); return null; }
+  const t0 = performance.now();
+  const m = TILE_SCRATCH_MARGIN, S = SOLID_TILE_SCALE, T = TEX_TILE_SCALE;
+  const sc = tileScratch._ctx;
+  sc.setTransform(1, 0, 0, 1, 0, 0); sc.clearRect(0, 0, tileScratch.width, tileScratch.height);
+  paintSolidCells(sc, tx, ty, m);
+  const cv = takeTileCanvas(tilePoolTex, tileTexPx);
+  const c2d = cv._ctx;
+  c2d.setTransform(1, 0, 0, 1, 0, 0);
+  const k = T / S; // 2.5
+  c2d.drawImage(tileScratch, -m * k, -m * k, tileScratch.width * k, tileScratch.height * k);
+  c2d.setTransform(1, 0, 0, 1, -tileTexPx * tx, -tileTexPx * ty);
+  const cellWpx = Math.ceil(MESH_CELL_LON_DEG * PX_PER_DEG_LON * T) + 1;
+  const cellHpx = Math.ceil(MESH_CELL_LAT_DEG * PX_PER_DEG_LAT * T) + 1;
+  tileCellWindow(tx, ty);
+  forEachLanduseCellInWindow(_wRowMin, _wRowMax, _wColMin, _wColMax, (meshCode, v)=>{
+    const pattern = tilePatterns[tileFileForCode[LANDUSE_ORDER[v - 1]]];
+    if(!pattern) return;
+    const wx = worldX(_cellLon + MESH_CELL_LON_DEG/2), wy = worldY(_cellLat + MESH_CELL_LAT_DEG/2);
+    const rx = (wx - tileOriginX) * T, ry = (wy - tileOriginY) * T;
+    c2d.fillStyle = pattern;
+    c2d.fillRect(rx - cellWpx/2, ry - cellHpx/2, cellWpx, cellHpx);
+  });
+  c2d.setTransform(1, 0, 0, 1, 0, 0);
+  const ms = performance.now() - t0;
+  tileStats.texBakes++; tileStats.texBakeMs += ms; if(ms > tileStats.texBakeMaxMs) tileStats.texBakeMaxMs = ms;
+  return cv;
+}
+function bakeAndStoreTextureTile(tx, ty, key){
+  const cv = bakeTextureTile(tx, ty, key);
+  if(!cv) return false;
+  texTiles.set(key, { cv, last: tileFrame });
+  evictTiles(texTiles, tilePoolTex, CONFIG.TILE_CACHE_MAX_TEXTURED, 'evictionsTex');
+  return true;
+}
+
+// LRU：上限を超えたら、最終使用フレームが古いものから捨てる（現在画面に映っている＝今フレームで使ったタイルは捨てない）。
+// 捨てたcanvasはプールに戻して再利用する。
+function evictTiles(map, pool, max, statName){
+  while(map.size > max){
+    let oldKey = -1, oldLast = Infinity;
+    for(const [k, e] of map){ if(e.last < tileFrame && e.last < oldLast){ oldLast = e.last; oldKey = k; } }
+    if(oldKey === -1) break;
+    const e = map.get(oldKey);
+    map.delete(oldKey);
+    releaseTileCanvas(pool, e.cv);
+    tileStats[statName]++;
   }
 }
 
+// ---- 毎フレームのbakeスケジュール ----
+// 画面に映るタイル＋周囲 CONFIG.TILE_PREFETCH タイルのうち、未生成のテクスチャタイルを、プレイヤーに近い順に焼く。
+// 1フレームのbakeは最大 CONFIG.TILE_BAKES_PER_FRAME 枚、合計 CONFIG.TILE_BAKE_BUDGET_MS を超えない範囲
+// （ただし画面内に未生成があれば、最低1枚は必ず焼く）。
+function scheduleTextureBakes(pWX, pWY, vx0, vx1, vy0, vy1){
+  const pad = CONFIG.TILE_PREFETCH;
+  const x0 = Math.max(0, vx0 - pad), x1 = Math.min(tilesX - 1, vx1 + pad);
+  const y0 = Math.max(0, vy0 - pad), y1 = Math.min(tilesY - 1, vy1 + pad);
+  const cands = [];
+  for(let ty = y0; ty <= y1; ty++){
+    for(let tx = x0; tx <= x1; tx++){
+      const key = ty * tilesX + tx;
+      if(texTiles.has(key) || tileEmpty.has(key)) continue;
+      const dx = tileOriginX + (tx + 0.5) * tileWorldPx - pWX, dy = tileOriginY + (ty + 0.5) * tileWorldPx - pWY;
+      cands.push({ tx, ty, key, vis: (tx >= vx0 && tx <= vx1 && ty >= vy0 && ty <= vy1), d: dx*dx + dy*dy });
+    }
+  }
+  if(cands.length === 0) return;
+  cands.sort((a, b)=> a.d - b.d);
+  const vi = cands.findIndex(c => c.vis);
+  if(vi > 0){ cands.unshift(cands.splice(vi, 1)[0]); } // 画面内の未生成のうち最も近いものを先頭に（最低1枚は必ず焼く）
+  const t0 = performance.now();
+  let n = 0;
+  for(const c of cands){
+    if(n >= CONFIG.TILE_BAKES_PER_FRAME) break;
+    if(n >= 1 && performance.now() - t0 >= CONFIG.TILE_BAKE_BUDGET_MS) break;
+    if(bakeAndStoreTextureTile(c.tx, c.ty, c.key)) n++; // セルが無いタイル(空)は数えない
+  }
+}
+
+// 画面に映るタイルの範囲（ワールド座標の中心 pWX,pWY、ズーム z）
+function tileViewRange(pWX, pWY, z){
+  const halfW = W/(2*z) + 2, halfH = H/(2*z) + 2;
+  return [Math.max(0, Math.floor((pWX - halfW - tileOriginX) / tileWorldPx)), Math.min(tilesX - 1, Math.floor((pWX + halfW - tileOriginX) / tileWorldPx)),
+          Math.max(0, Math.floor((pWY - halfH - tileOriginY) / tileWorldPx)), Math.min(tilesY - 1, Math.floor((pWY + halfH - tileOriginY) / tileWorldPx))];
+}
+
+// ---- 地形の描画（draw() から、県境クリップの中で呼ぶ）----
+// 画面に映るタイルを drawImage で貼る。貼り付け先の端は、ズーム・カメラ変換で求めた画面座標を整数pxにスナップし
+// （隣り合うタイルの境界は同じ式の同じ丸め値）、幅は「次のタイルの端－このタイルの端」で求めるので、隙間も重なりも出ない。
+// テクスチャONで読み込み完了済み＆テクスチャタイルがキャッシュにあればそれを、無ければ単色タイル（タイルごとのフォールバック）を使う。
+function drawTerrainTiles(pWX, pWY, z, textureOn){
+  if(!landuseGrid || tilesX <= 0) return;
+  tileFrame++;
+  const [vx0, vx1, vy0, vy1] = tileViewRange(pWX, pWY, z);
+  if(vx0 > vx1 || vy0 > vy1) return;
+  const useTex = !!textureOn && tileTexturesReady;
+  if(useTex) scheduleTextureBakes(pWX, pWY, vx0, vx1, vy0, vy1);
+  const nx = vx1 - vx0 + 1, ny = vy1 - vy0 + 1;
+  const ex = new Array(nx + 1), ey = new Array(ny + 1);
+  for(let i = 0; i <= nx; i++) ex[i] = Math.round(W/2 + (tileOriginX + (vx0 + i) * tileWorldPx - pWX) * z);
+  for(let j = 0; j <= ny; j++) ey[j] = Math.round(H/2 + (tileOriginY + (vy0 + j) * tileWorldPx - pWY) * z);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0); // 画面（デバイス）座標で貼る。県境クリップはデバイス座標で保持されている
+  for(let j = 0; j < ny; j++){
+    for(let i = 0; i < nx; i++){
+      const tx = vx0 + i, ty = vy0 + j, key = ty * tilesX + tx;
+      if(tileEmpty.has(key)) continue;
+      let cv = null;
+      if(useTex){ const e = texTiles.get(key); if(e){ e.last = tileFrame; cv = e.cv; } }
+      if(!cv) cv = getSolidTile(tx, ty, key);
+      if(!cv) continue;
+      const dw = ex[i+1] - ex[i], dh = ey[j+1] - ey[j];
+      if(dw <= 0 || dh <= 0) continue;
+      try { ctx.drawImage(cv, 0, 0, cv.width, cv.height, ex[i], ey[j], dw, dh); }
+      catch(e){ /* 描画に失敗したタイルはこのフレームだけ飛ばす */ }
+    }
+  }
+  ctx.restore();
+}
+
+// 指定の位置の周囲（画面＋ring周）のテクスチャタイルを、予算なしで同期的に焼く（ゲーム開始前・再プレイ時）。
+function prebakeTerrainTiles(pWX, pWY, z, ring){
+  if(!tileTexturesReady || !landuseGrid) return;
+  tileFrame++;
+  const t0 = performance.now();
+  const [vx0, vx1, vy0, vy1] = tileViewRange(pWX, pWY, z);
+  for(let ty = Math.max(0, vy0 - ring); ty <= Math.min(tilesY - 1, vy1 + ring); ty++){
+    for(let tx = Math.max(0, vx0 - ring); tx <= Math.min(tilesX - 1, vx1 + ring); tx++){
+      const key = ty * tilesX + tx;
+      if(texTiles.has(key) || tileEmpty.has(key)) continue;
+      if(bakeAndStoreTextureTile(tx, ty, key)) tileStats.prebakeTiles++;
+    }
+  }
+  tileStats.prebakeMs += performance.now() - t0;
+}
+function prebakeTerrainAtPlayer(ring){
+  prebakeTerrainTiles(worldX(state.player.lon), worldY(state.player.lat), cameraZoom, ring);
+}
+
+// ゲーム開始の入口：テクスチャの読み込みが終わる（失敗も含む）のを待ち、スポーン周辺（画面＋1周）を先に焼いてから cb を呼ぶ。
+// 読み込みが CONFIG.TILE_START_WAIT_MS を超えて終わらない時は、単色タイルのまま開始する（そのうち焼き込みに切り替わる）。
+function terrainStartWhenReady(cb){
+  const t0 = performance.now();
+  const tick = ()=>{
+    if(terrainTexturesFinished()){
+      prebakeTerrainAtPlayer(1);
+      cb(); return;
+    }
+    if(performance.now() - t0 > CONFIG.TILE_START_WAIT_MS){
+      console.warn('[terrain] テクスチャの読み込みが終わらないため、単色タイルで開始します');
+      cb(); return;
+    }
+    setTimeout(tick, 30);
+  };
+  tick();
+}
+
+// タイルの状態（検証・開発確認用）。canvasの合計ピクセル数は、キャッシュ中のタイル＋プール＋作業canvas。
+function terrainTileInfo(){
+  let pxTex = 0, pxSolid = 0, pxPool = 0;
+  for(const e of texTiles.values()) pxTex += e.cv.width * e.cv.height;
+  for(const e of solidTiles.values()) pxSolid += e.cv.width * e.cv.height;
+  tilePoolTex.forEach(cv => { pxPool += cv.width * cv.height; }); tilePoolSolid.forEach(cv => { pxPool += cv.width * cv.height; });
+  const pxScratch = tileScratch ? tileScratch.width * tileScratch.height : 0;
+  return { tex: texTiles.size, solid: solidTiles.size, empty: tileEmpty.size, poolTex: tilePoolTex.length, poolSolid: tilePoolSolid.length,
+           pxTex, pxSolid, pxPool, pxScratch, pxTotal: pxTex + pxSolid + pxPool + pxScratch, tilesX, tilesY, tileWorldPx, texturesReady: tileTexturesReady, frame: tileFrame,
+           stats: Object.assign({}, tileStats) };
+}
 
 // ==== 鉄道路線の描画（rail_data.js の RAIL_ROUTES を使用） ====
 // 路線はプレイヤー位置に関わらず変化しない静的情報なので、起動時に1回だけオフスクリーンcanvasへ描画し、
-// 毎フレームはそのcanvasをdrawImageで貼るだけにする（buildLanduseRasterと同じ考え方）。
+// 毎フレームはそのcanvasをdrawImageで貼るだけにする（地形のタイルとは別に、起動時に1回だけ描く方式）。
 // 事業者種別(operatorType)：1=新幹線, 2=JR在来線, 3=公営鉄道, 4=民営鉄道, 5=第三セクター
 // （国土数値情報 N02 の値をこのデータで実際に確認済み。3〜5はすべて「私鉄」として扱う＝地下鉄含む）
 const RAIL_OPERATOR_SHINKANSEN = 1, RAIL_OPERATOR_JR = 2; // 3,4,5はまとめて私鉄
@@ -453,7 +657,7 @@ function buildRailCanvas(){
 // ==== 河川の描画（river_data.js の riverData を使用） ====
 // 鉄道と全く同じ考え方：プレイヤー位置に関わらず変化しない静的情報なので、起動時に1回だけ
 // オフスクリーンcanvasへ描画し、毎フレームはそのcanvasをdrawImageで貼るだけにする。
-// 色は、地形テクスチャの水面（PATTERN_WATER）や各RAIL_STYLEの色と衝突しないよう、
+// 色は、地形テクスチャの水面や各RAIL_STYLEの色と衝突しないよう、
 // 白に近い薄い水色（#cdeef7）を採用した。太さはJR在来線(3)よりやや細い2.5。
 const RIVER_STYLE = { color: '#33CCFF', width: 2.5 };
 const RIVER_RASTER_SCALE = 0.5; // 鉄道と同じ縮小率
@@ -498,12 +702,12 @@ function buildRiverCanvas(){
 // 前提：data/pref<コード>/ の3ファイルが読み込み済み、かつsetupWorldCoordinates()が実行済み。
 // ======================================================================
 function initTerrain(){
+  disposeTerrainTiles();            // 前の県のタイル・プール・作業canvasをすべて破棄（width/height=0で解放）してから作り直す
+  textureLoadFinished = 0;          // テクスチャ読み込みの完了数・画像も作り直す
+  for(const k of Object.keys(TEXTURE_IMAGES)) delete TEXTURE_IMAGES[k];
   buildLanduseGrid();               // 土地利用メッシュ格子（RLEをUint8Arrayへ直接展開。展開後 MESH_RUNS_FLAT は null）
-  buildLanduseRaster();             // 単色の土地利用ラスター
-  TEXTURE_GRID_LON0 = lonMin; TEXTURE_GRID_LAT0 = latMin;
-  buildTextureGrid();               // テクスチャ用の軽量グリッド
-  startTextureLoads();              // テクスチャ画像の読み込み開始（全部そろったらonload側で焼き込み）
-  tryBuildTexturedLanduseRaster();  // すでに揃っていれば（キャッシュ等）ここで焼き込み
+  initTileSystem();                 // 地形タイル（原点・タイル数・作業canvas・色/テクスチャの対応）。タイル本体は draw のたびに必要な分だけ作る
+  startTextureLoads();              // テクスチャ画像の読み込み開始（12枚そろったらパターンを作り、タイルのbakeが始まる）
   buildRailCanvas();                // 鉄道canvas
   buildRiverCanvas();               // 河川canvas
 }

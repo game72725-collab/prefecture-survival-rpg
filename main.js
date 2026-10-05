@@ -49,6 +49,14 @@ const CONFIG = {
   DEBUG: false,                // true の時だけ、開発確認用の console.log と、画面隅の dt(ms)・FPS 表示を出す。URLに ?debug=1 を付けても true になる（県コードなどは画面には一切出さない）
   DT_MAX_SEC: 0.05,            // 1フレームのdt（秒）の上限。タブ復帰や重い処理の直後に、大きな値で一気に動かないようにする（0.05秒＝20fps相当）
   MAX_STEP_PX: 8,              // 移動の1サブステップの最大量(px)。1フレームの移動量がこれを超える時は等分して、各サブステップで通行判定・県境判定をやり直す（すり抜け防止）
+  // ---- 地形タイル（terrain.js） ----
+  TILE_WORLD_PX: 200,          // タイルの大きさ（ワールドpx）。5の倍数にすること（単色タイルの解像度0.4倍で整数pxになるため）
+  TILE_PREFETCH: 2,            // 画面に映るタイルの周囲、何タイル先までテクスチャタイルを先読みして焼くか
+  TILE_BAKES_PER_FRAME: 2,     // 1フレームに焼くテクスチャタイルの最大枚数
+  TILE_BAKE_BUDGET_MS: 4,      // 1フレームのbakeの合計時間の目安（超えたらそのフレームはそこまで。ただし画面内に未生成があれば最低1枚は焼く）
+  TILE_CACHE_MAX_TEXTURED: 160, // テクスチャタイルのキャッシュ上限（枚）。超えたら最終使用が古いものから捨ててプールへ
+  TILE_CACHE_MAX_SOLID: 400,   // 単色タイルのキャッシュ上限（枚）
+  TILE_START_WAIT_MS: 5000,    // ゲーム開始前にテクスチャの読み込みを待つ最大時間。超えたら単色タイルのまま開始する
   ZOOM_FACTOR: 1.4,        // 画面表示の拡大率。緯度経度→画面座標の変換すべてに掛かる
   SPEED_NORMAL: 3.4,       // 通常地形（建物用地・道路・鉄道・農地・その他など）での移動速度（ズーム未適用の基準値）
   SPEED_FOREST_MULT: 0.5,  // 森林（0500）での速度倍率
@@ -481,7 +489,7 @@ function draw(){
   });
   ctx.restore();
 
-  // 東京都：起動時に事前ラスター化した土地利用カラーマップを、PREFECTURE_RINGでクリップして描画
+  // 土地利用の地形（タイル）：PREFECTURE_RINGでクリップして描画
   ctx.save();
   ctx.beginPath();
   PREFECTURE_RING.forEach(([lon,lat], i)=>{
@@ -490,38 +498,9 @@ function draw(){
   });
   ctx.closePath();
   ctx.clip();
-  // テクスチャONなら焼き付け済みラスターを使い、未生成（読み込み中）・OFF・描画失敗時は通常ラスターへ戻す。
-  // ここが今回のバグ：texturedLanduseRasterCanvasが無い場合（テクスチャOFF時・焼き込み完了前）に
-  // どちらのdrawImageも呼ばれず、下地が全く描かれていなかった。rasterDrawnで確実にフォールバックする。
-  let rasterDrawn = false;
-  if(toggleTexture.checked && texturedLanduseRasterCanvas){
-    try {
-      const rasterOriginScreenX = W/2 + (texturedLanduseRasterOriginX - pWX);
-      const rasterOriginScreenY = H/2 + (texturedLanduseRasterOriginY - pWY);
-      ctx.drawImage(
-        texturedLanduseRasterCanvas,
-        rasterOriginScreenX,
-        rasterOriginScreenY,
-        texturedLanduseRasterCanvas.width / TEXTURED_LANDUSE_RASTER_SCALE,
-        texturedLanduseRasterCanvas.height / TEXTURED_LANDUSE_RASTER_SCALE
-      );
-      rasterDrawn = true;
-    } catch(e) {
-      rasterDrawn = false; // 下のフォールバックに任せる
-    }
-  }
-  if(!rasterDrawn && landuseRasterCanvas){
-    // テクスチャOFF、まだ焼き込みが終わっていない、または上で失敗した場合はここで必ず単色ラスターを描く
-    const rasterOriginScreenX = W/2 + (landuseRasterOriginX - pWX);
-    const rasterOriginScreenY = H/2 + (landuseRasterOriginY - pWY);
-    ctx.drawImage(
-      landuseRasterCanvas,
-      rasterOriginScreenX,
-      rasterOriginScreenY,
-      landuseRasterCanvas.width / LANDUSE_RASTER_SCALE,
-      landuseRasterCanvas.height / LANDUSE_RASTER_SCALE
-    );
-  }
+  // 地形：画面に映るタイルだけをタイルキャッシュから貼る（terrain.js の drawTerrainTiles）。
+  // テクスチャON＆焼き込み済みならテクスチャタイル、それ以外（OFF・読み込み中・未生成）は単色タイルを、タイルごとに選ぶ。
+  drawTerrainTiles(pWX, pWY, z, toggleTexture.checked);
   ctx.restore();
   // 東京都の輪郭線
   ctx.beginPath();
@@ -687,7 +666,7 @@ function endGame(won){
   if(won) clearOverlay.classList.add('show'); else gameOverOverlay.classList.add('show');
 }
 
-window.resetGame = function(){ initGame(); };
+window.resetGame = function(){ initGame(); prebakeTerrainAtPlayer(0); }; // 再プレイ：新しいスポーン位置の画面内のタイルを先に焼く
 
 // ==== 県ナレッジ（data/pref<XX>/knowledge_<XX>.js の KNOWLEDGE_<XX>） ====
 // ボス戦クイズとヒント掲示板の元データ。1問 = { id, question, options(4つ), answer("0"〜"3"), hint }。
@@ -819,7 +798,10 @@ function initPrefectureGame(){
   initTerrain();           // terrain.js：メッシュ展開・地形ラスター・テクスチャ読み込み・鉄道/河川canvas
   initMinimap();           // ui.js：ミニマップ用canvas
   initGame();              // ラン単位の初期化（スポーン・宝箱・霧・タイマー）
-  const loadingOverlay = document.getElementById('loadingOverlay');
-  if(loadingOverlay) loadingOverlay.classList.remove('show');
-  requestAnimationFrame(loop);
+  // テクスチャの読み込みを待ち、スポーン周辺（画面＋1周）の地形タイルを先に焼いてから、読み込み中の表示を消してループを始める
+  terrainStartWhenReady(()=>{
+    const loadingOverlay = document.getElementById('loadingOverlay');
+    if(loadingOverlay) loadingOverlay.classList.remove('show');
+    requestAnimationFrame(loop);
+  });
 }
