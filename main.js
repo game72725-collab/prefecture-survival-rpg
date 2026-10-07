@@ -46,6 +46,7 @@ const IMG_CAPITAL = loadImg('assets/capital.png'); // 元々アルファ有り�
 const CONFIG = {
   // ---- 県の選択・開発用 ----
   FORCE_PREFECTURE_CODE: null, // 数値（例：13）を入れると、その県で開始（data/available_prefs.js の一覧に含まれる場合のみ有効）。null ならURLの?pref=NN、無ければ一覧からランダム
+  DEBUG_PROF_SYNC: false,      // true にすると、DEBUG時のフレーム内訳の計測で、各区間の終わりに描画を確定させる（内訳が正確になる代わりに少し遅い）
   DEBUG: false,                // true の時だけ、開発確認用の console.log と、画面隅の dt(ms)・FPS 表示を出す。URLに ?debug=1 を付けても true になる（県コードなどは画面には一切出さない）
   DT_MAX_SEC: 0.05,            // 1フレームのdt（秒）の上限。タブ復帰や重い処理の直後に、大きな値で一気に動かないようにする（0.05秒＝20fps相当）
   MAX_STEP_PX: 8,              // 移動の1サブステップの最大量(px)。1フレームの移動量がこれを超える時は等分して、各サブステップで通行判定・県境判定をやり直す（すり抜け防止）
@@ -56,6 +57,8 @@ const CONFIG = {
   TILE_BAKE_BUDGET_MS: 4,      // 1フレームのbakeの合計時間の目安（超えたらそのフレームはそこまで。ただし画面内に未生成があれば最低1枚は焼く）
   TILE_CACHE_MAX_TEXTURED: 160, // テクスチャタイルのキャッシュ上限（枚）。超えたら最終使用が古いものから捨ててプールへ
   TILE_CACHE_MAX_SOLID: 400,   // 単色タイルのキャッシュ上限（枚）
+  TILE_CACHE_MAX_RAIL: 300,    // 鉄道タイルのキャッシュ上限（枚。線が1本も触れない空タイルは数えない）
+  TILE_CACHE_MAX_RIVER: 300,   // 河川タイルのキャッシュ上限（枚。同上）
   TILE_START_WAIT_MS: 5000,    // ゲーム開始前にテクスチャの読み込みを待つ最大時間。超えたら単色タイルのまま開始する
   ZOOM_FACTOR: 1.4,        // 画面表示の拡大率。緯度経度→画面座標の変換すべてに掛かる
   SPEED_NORMAL: 3.4,       // 通常地形（建物用地・道路・鉄道・農地・その他など）での移動速度（ズーム未適用の基準値）
@@ -462,7 +465,17 @@ function update(dtSec, rawMs){
 
 // ==== 画像 or フォールバック図形の描画ヘルパー ====
 // targetH（表示高さ）だけ指定し、幅は元画像の縦横比から自動計算する（引き伸ばし防止）
+// ---- 1フレームの描画時間の内訳（CONFIG.DEBUG または ?debug=1 の時だけ計測。通常は何もしない）----
+// frameProf = { bake, terrain, river, rail, sprites, fog, ui }（ミリ秒）。bake＝タイルのbake（地形・鉄道・河川の共有予算）、
+// terrain＝地形タイルの貼り付け＋県境線、river／rail＝線タイルの貼り付け、sprites＝宝箱・掲示板・県庁・探検家、fog＝霧の合成、ui＝ミニマップ。
+let frameProf = null, _profT = 0;
+function profBegin(){ if(CONFIG.DEBUG){ frameProf = { bake: 0, terrain: 0, river: 0, rail: 0, sprites: 0, fog: 0, ui: 0 }; _profT = performance.now(); } }
+// CONFIG.DEBUG_PROF_SYNC が true の時は、各区間の終わりでcanvasの描画命令を強制的に確定させる（getImageData）。
+// canvas2Dは描画命令を溜めて後でまとめて実行するため、同期しないと「重い処理の時間が、あとで確定が起きる別の区間に付く」。同期すると区間ごとの内訳が正確になるが、全体は少し遅くなる。
+function profLap(name){ if(frameProf){ if(CONFIG.DEBUG_PROF_SYNC) ctx.getImageData(0, 0, 1, 1); const t = performance.now(); frameProf[name] += t - _profT; _profT = t; } }
+
 function draw(){
+  profBegin();
   ctx.clearRect(0,0,W,H);
   const pWX = worldX(state.player.lon), pWY = worldY(state.player.lat);
   function toScreen(wx, wy){ return [ W/2 + (wx - pWX), H/2 + (wy - pWY) ]; }
@@ -498,6 +511,9 @@ function draw(){
   });
   ctx.closePath();
   ctx.clip();
+  // タイルのキャッシュ更新：必要なタイル（地形のテクスチャ・鉄道・河川）のbakeを、共有の予算内で予約・実行する（terrain.js）
+  updateTileCaches(pWX, pWY, z, toggleTexture.checked, toggleRail.checked, toggleRiver.checked);
+  profLap('bake');
   // 地形：画面に映るタイルだけをタイルキャッシュから貼る（terrain.js の drawTerrainTiles）。
   // テクスチャON＆焼き込み済みならテクスチャタイル、それ以外（OFF・読み込み中・未生成）は単色タイルを、タイルごとに選ぶ。
   drawTerrainTiles(pWX, pWY, z, toggleTexture.checked);
@@ -513,48 +529,14 @@ function draw(){
   ctx.lineWidth = 2;
   ctx.stroke();
 
-  // 河川・鉄道：画面に実際に映っている範囲だけをcanvasから切り取って貼る（9引数のdrawImage）。
-  // 全体を毎フレーム貼っていた以前の方式より、ズームして画面範囲が小さい時に特に軽くなる。
-  const VIEWPORT_MARGIN_WORLD_PX = 120; // 画面端で地形が一瞬見切れないよう、少し広めに切り取る余白
-  function drawStaticLayerCropped(sourceCanvas, originX, originY, rasterScale){
-    // 現在のプレイヤー位置・ズーム倍率から、画面に映っているワールド座標の範囲を求める
-    const halfWWorld = W/(2*z) + VIEWPORT_MARGIN_WORLD_PX;
-    const halfHWorld = H/(2*z) + VIEWPORT_MARGIN_WORLD_PX;
-    let wx0 = pWX - halfWWorld, wx1 = pWX + halfWWorld;
-    let wy0 = pWY - halfHWorld, wy1 = pWY + halfHWorld;
+  profLap('terrain');
 
-    // ワールド座標 → このcanvas上のピクセル座標（切り取る矩形 sx,sy,sw,sh）に変換
-    let sx = (wx0 - originX) * rasterScale;
-    let sy = (wy0 - originY) * rasterScale;
-    let sw = (wx1 - wx0) * rasterScale;
-    let sh = (wy1 - wy0) * rasterScale;
-
-    // canvasの実サイズをはみ出さないようクランプ（はみ出した分は幅・高さ側に反映する）
-    if(sx < 0){ sw += sx; sx = 0; }
-    if(sy < 0){ sh += sy; sy = 0; }
-    if(sx + sw > sourceCanvas.width) sw = sourceCanvas.width - sx;
-    if(sy + sh > sourceCanvas.height) sh = sourceCanvas.height - sy;
-    if(sw <= 0 || sh <= 0) return; // 画面内にこのレイヤーが全く無い（通常は起こらない）
-
-    // クランプ後のsx,sy,sw,shから、対応する貼り付け先（画面側）の位置・サイズを逆算する
-    const cwx0 = sx / rasterScale + originX, cwx1 = (sx+sw) / rasterScale + originX;
-    const cwy0 = sy / rasterScale + originY, cwy1 = (sy+sh) / rasterScale + originY;
-    const dx = W/2 + (cwx0 - pWX), dy = H/2 + (cwy0 - pWY);
-    const dWidth = cwx1 - cwx0, dHeight = cwy1 - cwy0;
-
-    ctx.drawImage(sourceCanvas, sx, sy, sw, sh, dx, dy, dWidth, dHeight);
-  }
-
-  // 河川（terrain.jsで起動時に1回だけ描画したcanvasを貼るだけ。地形テクスチャの上、鉄道より下）
-  // 鉄道と全く同じ仕組み・同じズーム変換ブロック内で描くので、ズームしても地形・鉄道・河川が常に一致する。
-  if(riverCanvas && toggleRiver.checked){
-    drawStaticLayerCropped(riverCanvas, riverCanvasOriginX, riverCanvasOriginY, RIVER_RASTER_SCALE);
-  }
-
-  // 鉄道路線（terrain.jsで起動時に1回だけ描画したcanvasを貼るだけ。地形テクスチャの上、宝箱・県庁・探検家より下）
-  if(railCanvas && toggleRail.checked){
-    drawStaticLayerCropped(railCanvas, railCanvasOriginX, railCanvasOriginY, RAIL_RASTER_SCALE);
-  }
+  // 河川・鉄道：地形と同じタイル格子・同じスナップ関数で、焼き済みの線タイルを貼る（terrain.js の drawLineTiles）。
+  // 河川は地形テクスチャの上・鉄道より下、鉄道は宝箱・県庁・探検家より下。ズーム変換の中で描くので、ズームしても地形・鉄道・河川が常に一致する。
+  if(toggleRiver.checked) drawLineTiles(riverLayer, pWX, pWY, z);
+  profLap('river');
+  if(toggleRail.checked) drawLineTiles(railLayer, pWX, pWY, z);
+  profLap('rail');
 
   // 宝箱
   const now = performance.now();
@@ -604,6 +586,7 @@ function draw(){
     ctx.beginPath(); ctx.arc(W/2, H/2, PLAYER_R_PX, 0, Math.PI*2); ctx.fill();
     ctx.strokeStyle = '#b89400'; ctx.lineWidth = 3; ctx.stroke();
   });
+  profLap('sprites');
   ctx.restore(); // カメラズームここまで
 
   // ② Fog of War オーバーレイ（探索済み以外を覆う。これが③の県庁非表示も兼ねる）
@@ -617,9 +600,11 @@ function draw(){
   fogCtx.drawImage(maskCanvas, sx, sy, sw, sh, 0, 0, W, H);
   fogCtx.globalCompositeOperation = 'source-over';
   ctx.drawImage(fogCanvas, 0, 0);
+  profLap('fog');
 
   // ④ ミニマップ（探索済みシルエットのみ、地名なし）
   drawMinimap(pWX, pWY);
+  profLap('ui');
 }
 
 // ミニマップ用の使い回しキャンバス（霧オーバーレイの合成用）。サイズはワールド比で固定なので一度だけ作る。
@@ -642,18 +627,24 @@ function loop(now){
 }
 
 // 開発確認用：画面の隅に dt(ms) と FPS（直近の平均）を出す。CONFIG.DEBUG（または ?debug=1）の時だけ作られる。通常は何も出ない。
-let debugHudEl = null, debugAccumSec = 0, debugFrames = 0, debugText = '';
+let debugHudEl = null, debugAccumSec = 0, debugFrames = 0, debugText = '', debugProfAcc = null;
 function updateDebugHud(dtSec, rawDtSec){
   if(!debugHudEl){
     debugHudEl = document.createElement('div');
     debugHudEl.id = 'debugHud';
-    debugHudEl.style.cssText = 'position:absolute;left:4px;bottom:3px;z-index:40;pointer-events:none;font:10px/1.3 monospace;color:#9fffd0;background:rgba(0,0,0,0.55);padding:1px 5px;border-radius:3px;';
+    debugHudEl.style.cssText = 'position:absolute;left:4px;bottom:3px;z-index:40;pointer-events:none;white-space:pre;font:10px/1.3 monospace;color:#9fffd0;background:rgba(0,0,0,0.55);padding:1px 5px;border-radius:3px;';
     wrap.appendChild(debugHudEl);
   }
   debugAccumSec += rawDtSec; debugFrames++;
+  if(frameProf){ if(!debugProfAcc) debugProfAcc = { bake: 0, terrain: 0, river: 0, rail: 0, sprites: 0, fog: 0, ui: 0 }; for(const k in debugProfAcc) debugProfAcc[k] += frameProf[k]; }
   if(debugAccumSec >= 0.5){ // 0.5秒ごとに平均して表示（数字がチラつかないように）
     const avgDt = debugAccumSec / debugFrames;
     debugText = 'dt ' + (avgDt * 1000).toFixed(1) + 'ms  ' + (1 / avgDt).toFixed(0) + 'fps  x' + (avgDt * 60).toFixed(2);
+    if(debugProfAcc){ // 描画の内訳（ms/フレームの平均）：bake・地形・河川・鉄道・スプライト・霧・UI
+      const f = (k)=> (debugProfAcc[k] / debugFrames).toFixed(1);
+      debugText += '\nbake ' + f('bake') + ' terr ' + f('terrain') + ' river ' + f('river') + ' rail ' + f('rail') + ' spr ' + f('sprites') + ' fog ' + f('fog') + ' ui ' + f('ui');
+      debugProfAcc = null;
+    }
     debugAccumSec = 0; debugFrames = 0;
   }
   debugHudEl.textContent = debugText || 'dt ...';

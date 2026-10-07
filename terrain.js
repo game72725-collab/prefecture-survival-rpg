@@ -264,7 +264,8 @@ let tileTexturesReady = false; // パターンが1つ以上作れた（＝テク
 let tileFrame = 0;           // draw のたびに増える。タイルの「最終使用フレーム」（LRU）に使う
 let tileSolidColors = null;  // v(1〜) → 色
 let tileFileForCode = null;  // 土地利用カテゴリ → テクスチャ画像パス
-const tileStats = { canvasesCreated: 0, texBakes: 0, texBakeMs: 0, texBakeMaxMs: 0, solidBuilds: 0, solidMs: 0, evictionsTex: 0, evictionsSolid: 0, prebakeMs: 0, prebakeTiles: 0 };
+const tileStats = { canvasesCreated: 0, texBakes: 0, texBakeMs: 0, texBakeMaxMs: 0, solidBuilds: 0, solidMs: 0, evictionsTex: 0, evictionsSolid: 0, prebakeMs: 0, prebakeTiles: 0,
+                    railBakes: 0, railBakeMs: 0, railBakeMaxMs: 0, riverBakes: 0, riverBakeMs: 0, riverBakeMaxMs: 0, evictionsRail: 0, evictionsRiver: 0 };
 
 function takeTileCanvas(pool, size){
   let cv = pool.pop();
@@ -288,6 +289,7 @@ function disposeTerrainTiles(){
   for(const e of solidTiles.values()) disposeTileCanvas(e.cv);
   tilePoolTex.forEach(disposeTileCanvas); tilePoolSolid.forEach(disposeTileCanvas);
   if(tileScratch) disposeTileCanvas(tileScratch);
+  disposeLineLayers();              // 鉄道・河川のタイルキャッシュ・プール・索引も破棄
   texTiles = new Map(); solidTiles = new Map(); tileEmpty = new Set();
   tilePoolTex = []; tilePoolSolid = []; tileScratch = null;
   tilePatterns = null; tileTexturesReady = false; tileFrame = 0;
@@ -470,58 +472,88 @@ function evictTiles(map, pool, max, statName){
   }
 }
 
-// ---- 毎フレームのbakeスケジュール ----
-// 画面に映るタイル＋周囲 CONFIG.TILE_PREFETCH タイルのうち、未生成のテクスチャタイルを、プレイヤーに近い順に焼く。
-// 1フレームのbakeは最大 CONFIG.TILE_BAKES_PER_FRAME 枚、合計 CONFIG.TILE_BAKE_BUDGET_MS を超えない範囲
-// （ただし画面内に未生成があれば、最低1枚は必ず焼く）。
-function scheduleTextureBakes(pWX, pWY, vx0, vx1, vy0, vy1){
+// ---- 毎フレームのbakeスケジュール（地形のテクスチャタイル・鉄道・河川で共有） ----
+// 画面に映るタイル＋周囲 CONFIG.TILE_PREFETCH タイルのうち、未生成のタイルを次の優先順位で焼く：
+//   ① 画面内の地形（テクスチャ）  ② 画面内の鉄道・河川  ③ 先読み（地形・鉄道・河川とも、プレイヤーに近い順）
+// 1フレームのbakeは最大 CONFIG.TILE_BAKES_PER_FRAME 枚、合計 CONFIG.TILE_BAKE_BUDGET_MS を超えない範囲（地形・鉄道・河川で共有）。
+// ただし画面内に未生成があれば、最低1枚は必ず焼く（線やテクスチャが一瞬抜けて見えないように）。
+// 線が1本も触れない／セルが無い「空」のタイルは canvas を作らず、枚数にも数えない。
+function scheduleTileBakes(pWX, pWY, vx0, vx1, vy0, vy1, wantTex, wantRail, wantRiver){
   const pad = CONFIG.TILE_PREFETCH;
-  const x0 = Math.max(0, vx0 - pad), x1 = Math.min(tilesX - 1, vx1 + pad);
-  const y0 = Math.max(0, vy0 - pad), y1 = Math.min(tilesY - 1, vy1 + pad);
   const cands = [];
-  for(let ty = y0; ty <= y1; ty++){
-    for(let tx = x0; tx <= x1; tx++){
+  const consider = (layerId, tx, ty, key, vis)=>{
+    const dx = tileOriginX + (tx + 0.5) * tileWorldPx - pWX, dy = tileOriginY + (ty + 0.5) * tileWorldPx - pWY;
+    cands.push({ layerId, tx, ty, key, vis, grp: vis ? (layerId === 0 ? 0 : 1) : 2, d: dx*dx + dy*dy });
+  };
+  // 地形（テクスチャ）は地形の格子の範囲内だけ
+  if(wantTex){
+    const x0 = Math.max(0, vx0 - pad), x1 = Math.min(tilesX - 1, vx1 + pad), y0 = Math.max(0, vy0 - pad), y1 = Math.min(tilesY - 1, vy1 + pad);
+    for(let ty = y0; ty <= y1; ty++) for(let tx = x0; tx <= x1; tx++){
       const key = ty * tilesX + tx;
       if(texTiles.has(key) || tileEmpty.has(key)) continue;
-      const dx = tileOriginX + (tx + 0.5) * tileWorldPx - pWX, dy = tileOriginY + (ty + 0.5) * tileWorldPx - pWY;
-      cands.push({ tx, ty, key, vis: (tx >= vx0 && tx <= vx1 && ty >= vy0 && ty <= vy1), d: dx*dx + dy*dy });
+      consider(0, tx, ty, key, tx >= vx0 && tx <= vx1 && ty >= vy0 && ty <= vy1);
+    }
+  }
+  // 鉄道・河川は、線のタイル格子（県のbbox＋余白）の範囲内。触れる線分があり、まだ焼いていないタイルだけ
+  for(const [layerId, layer, want] of [[1, railLayer, wantRail], [2, riverLayer, wantRiver]]){
+    if(!want || !layer) continue;
+    const g = layer.g;
+    const x0 = Math.max(g.tx0, vx0 - pad), x1 = Math.min(g.tx0 + g.ntx - 1, vx1 + pad), y0 = Math.max(g.ty0, vy0 - pad), y1 = Math.min(g.ty0 + g.nty - 1, vy1 + pad);
+    for(let ty = y0; ty <= y1; ty++) for(let tx = x0; tx <= x1; tx++){
+      const key = (ty - g.ty0) * g.ntx + (tx - g.tx0);
+      if(layer.tiles.has(key) || !lineTileHasSegments(layer, key)) continue;
+      consider(layerId, tx, ty, key, tx >= vx0 && tx <= vx1 && ty >= vy0 && ty <= vy1);
     }
   }
   if(cands.length === 0) return;
-  cands.sort((a, b)=> a.d - b.d);
-  const vi = cands.findIndex(c => c.vis);
-  if(vi > 0){ cands.unshift(cands.splice(vi, 1)[0]); } // 画面内の未生成のうち最も近いものを先頭に（最低1枚は必ず焼く）
+  cands.sort((a, b)=> (a.grp - b.grp) || (a.d - b.d)); // ①画面内の地形 → ②画面内の鉄道・河川 → ③先読み。それぞれプレイヤーに近い順
   const t0 = performance.now();
   let n = 0;
   for(const c of cands){
     if(n >= CONFIG.TILE_BAKES_PER_FRAME) break;
     if(n >= 1 && performance.now() - t0 >= CONFIG.TILE_BAKE_BUDGET_MS) break;
-    if(bakeAndStoreTextureTile(c.tx, c.ty, c.key)) n++; // セルが無いタイル(空)は数えない
+    let ok;
+    if(c.layerId === 0) ok = bakeAndStoreTextureTile(c.tx, c.ty, c.key);
+    else ok = bakeAndStoreLineTile(c.layerId === 1 ? railLayer : riverLayer, c.tx, c.ty, c.key);
+    if(ok) n++; // 空のタイルは数えない
   }
 }
 
-// 画面に映るタイルの範囲（ワールド座標の中心 pWX,pWY、ズーム z）
-function tileViewRange(pWX, pWY, z){
+// 画面に映るタイルの範囲（ワールド座標の中心 pWX,pWY、ズーム z）。範囲の制限（クランプ）は呼び出し側で行う。
+function tileViewRangeRaw(pWX, pWY, z){
   const halfW = W/(2*z) + 2, halfH = H/(2*z) + 2;
-  return [Math.max(0, Math.floor((pWX - halfW - tileOriginX) / tileWorldPx)), Math.min(tilesX - 1, Math.floor((pWX + halfW - tileOriginX) / tileWorldPx)),
-          Math.max(0, Math.floor((pWY - halfH - tileOriginY) / tileWorldPx)), Math.min(tilesY - 1, Math.floor((pWY + halfH - tileOriginY) / tileWorldPx))];
+  return [Math.floor((pWX - halfW - tileOriginX) / tileWorldPx), Math.floor((pWX + halfW - tileOriginX) / tileWorldPx),
+          Math.floor((pWY - halfH - tileOriginY) / tileWorldPx), Math.floor((pWY + halfH - tileOriginY) / tileWorldPx)];
+}
+function tileViewRange(pWX, pWY, z){ // 地形の格子の範囲（0〜tilesX-1, 0〜tilesY-1）にクランプしたもの
+  const r = tileViewRangeRaw(pWX, pWY, z);
+  return [Math.max(0, r[0]), Math.min(tilesX - 1, r[1]), Math.max(0, r[2]), Math.min(tilesY - 1, r[3])];
+}
+// タイルの端の画面座標（整数pxにスナップ）。地形・鉄道・河川のタイルで共通の式なので、境界は同じ丸め値になり、隙間も重なりも出ず、
+// 地形と線の位置関係もずれない。幅は呼び出し側で「次のタイルの端－このタイルの端」として求める。
+function snapTileEdge(origin, idx, pW, halfScreen, z){ return Math.round(halfScreen + (origin + idx * tileWorldPx - pW) * z); }
+
+// ---- 毎フレーム：キャッシュの更新（フレーム番号を進め、必要なタイルのbakeを予約・実行する）。draw() の最初に1回呼ぶ ----
+function updateTileCaches(pWX, pWY, z, textureOn, railOn, riverOn){
+  if(!landuseGrid || tilesX <= 0) return;
+  tileFrame++;
+  const [rx0, rx1, ry0, ry1] = tileViewRangeRaw(pWX, pWY, z);
+  scheduleTileBakes(pWX, pWY, rx0, rx1, ry0, ry1, !!textureOn && tileTexturesReady, !!railOn, !!riverOn);
 }
 
 // ---- 地形の描画（draw() から、県境クリップの中で呼ぶ）----
 // 画面に映るタイルを drawImage で貼る。貼り付け先の端は、ズーム・カメラ変換で求めた画面座標を整数pxにスナップし
-// （隣り合うタイルの境界は同じ式の同じ丸め値）、幅は「次のタイルの端－このタイルの端」で求めるので、隙間も重なりも出ない。
+// （snapTileEdge。隣り合うタイルの境界は同じ式の同じ丸め値）、幅は「次のタイルの端－このタイルの端」で求めるので、隙間も重なりも出ない。
 // テクスチャONで読み込み完了済み＆テクスチャタイルがキャッシュにあればそれを、無ければ単色タイル（タイルごとのフォールバック）を使う。
 function drawTerrainTiles(pWX, pWY, z, textureOn){
   if(!landuseGrid || tilesX <= 0) return;
-  tileFrame++;
   const [vx0, vx1, vy0, vy1] = tileViewRange(pWX, pWY, z);
   if(vx0 > vx1 || vy0 > vy1) return;
   const useTex = !!textureOn && tileTexturesReady;
-  if(useTex) scheduleTextureBakes(pWX, pWY, vx0, vx1, vy0, vy1);
   const nx = vx1 - vx0 + 1, ny = vy1 - vy0 + 1;
   const ex = new Array(nx + 1), ey = new Array(ny + 1);
-  for(let i = 0; i <= nx; i++) ex[i] = Math.round(W/2 + (tileOriginX + (vx0 + i) * tileWorldPx - pWX) * z);
-  for(let j = 0; j <= ny; j++) ey[j] = Math.round(H/2 + (tileOriginY + (vy0 + j) * tileWorldPx - pWY) * z);
+  for(let i = 0; i <= nx; i++) ex[i] = snapTileEdge(tileOriginX, vx0 + i, pWX, W/2, z);
+  for(let j = 0; j <= ny; j++) ey[j] = snapTileEdge(tileOriginY, vy0 + j, pWY, H/2, z);
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0); // 画面（デバイス）座標で貼る。県境クリップはデバイス座標で保持されている
   for(let j = 0; j < ny; j++){
@@ -541,17 +573,65 @@ function drawTerrainTiles(pWX, pWY, z, textureOn){
   ctx.restore();
 }
 
-// 指定の位置の周囲（画面＋ring周）のテクスチャタイルを、予算なしで同期的に焼く（ゲーム開始前・再プレイ時）。
+// ---- 鉄道・河川の描画（draw() から、ズーム変換の中で呼ぶ。県境クリップは受けない）----
+// 地形と同じ範囲・同じスナップ関数でタイルを貼る。焼き済みのタイルだけを貼る（未生成は、同じフレームの bake 予約で順に焼かれる）。
+function drawLineTiles(layer, pWX, pWY, z){
+  if(!layer || tilesX <= 0) return;
+  const g = layer.g;
+  const r = tileViewRangeRaw(pWX, pWY, z);
+  const vx0 = Math.max(g.tx0, r[0]), vx1 = Math.min(g.tx0 + g.ntx - 1, r[1]), vy0 = Math.max(g.ty0, r[2]), vy1 = Math.min(g.ty0 + g.nty - 1, r[3]);
+  if(vx0 > vx1 || vy0 > vy1) return;
+  const nx = vx1 - vx0 + 1, ny = vy1 - vy0 + 1;
+  const ex = new Array(nx + 1), ey = new Array(ny + 1);
+  for(let i = 0; i <= nx; i++) ex[i] = snapTileEdge(tileOriginX, vx0 + i, pWX, W/2, z);
+  for(let j = 0; j <= ny; j++) ey[j] = snapTileEdge(tileOriginY, vy0 + j, pWY, H/2, z);
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  for(let j = 0; j < ny; j++){
+    for(let i = 0; i < nx; i++){
+      const key = (vy0 + j - g.ty0) * g.ntx + (vx0 + i - g.tx0);
+      const e = layer.tiles.get(key);
+      if(!e) continue; // 線が無い（空）か、まだ焼けていない
+      e.last = tileFrame;
+      const dw = ex[i+1] - ex[i], dh = ey[j+1] - ey[j];
+      if(dw <= 0 || dh <= 0) continue;
+      // 余白ごと拡大して、貼り付け先はタイルの矩形でクリップする（隣のタイルとは重ならず、境界の補間は旧canvasと同じ）
+      const kx = dw / tileLinePx, ky = dh / tileLinePx;
+      ctx.save();
+      ctx.beginPath(); ctx.rect(ex[i], ey[j], dw, dh); ctx.clip();
+      try { ctx.drawImage(e.cv, ex[i] - LINE_TILE_MARGIN * kx, ey[j] - LINE_TILE_MARGIN * ky, e.cv.width * kx, e.cv.height * ky); }
+      catch(err){ /* このフレームだけ飛ばす */ }
+      ctx.restore();
+    }
+  }
+  ctx.restore();
+}
+
+// 指定の位置の周囲（画面＋ring周）のタイルを、予算なしで同期的に焼く（ゲーム開始前・再プレイ時）。地形のテクスチャ・鉄道・河川を含む。
 function prebakeTerrainTiles(pWX, pWY, z, ring){
-  if(!tileTexturesReady || !landuseGrid) return;
+  if(!landuseGrid) return;
   tileFrame++;
   const t0 = performance.now();
-  const [vx0, vx1, vy0, vy1] = tileViewRange(pWX, pWY, z);
-  for(let ty = Math.max(0, vy0 - ring); ty <= Math.min(tilesY - 1, vy1 + ring); ty++){
-    for(let tx = Math.max(0, vx0 - ring); tx <= Math.min(tilesX - 1, vx1 + ring); tx++){
-      const key = ty * tilesX + tx;
-      if(texTiles.has(key) || tileEmpty.has(key)) continue;
-      if(bakeAndStoreTextureTile(tx, ty, key)) tileStats.prebakeTiles++;
+  const [rx0, rx1, ry0, ry1] = tileViewRangeRaw(pWX, pWY, z);
+  if(tileTexturesReady){
+    const [vx0, vx1, vy0, vy1] = tileViewRange(pWX, pWY, z);
+    for(let ty = Math.max(0, vy0 - ring); ty <= Math.min(tilesY - 1, vy1 + ring); ty++){
+      for(let tx = Math.max(0, vx0 - ring); tx <= Math.min(tilesX - 1, vx1 + ring); tx++){
+        const key = ty * tilesX + tx;
+        if(texTiles.has(key) || tileEmpty.has(key)) continue;
+        if(bakeAndStoreTextureTile(tx, ty, key)) tileStats.prebakeTiles++;
+      }
+    }
+  }
+  for(const layer of [railLayer, riverLayer]){
+    if(!layer) continue;
+    const g = layer.g;
+    for(let ty = Math.max(g.ty0, ry0 - ring); ty <= Math.min(g.ty0 + g.nty - 1, ry1 + ring); ty++){
+      for(let tx = Math.max(g.tx0, rx0 - ring); tx <= Math.min(g.tx0 + g.ntx - 1, rx1 + ring); tx++){
+        const key = (ty - g.ty0) * g.ntx + (tx - g.tx0);
+        if(layer.tiles.has(key)) continue;
+        if(bakeAndStoreLineTile(layer, tx, ty, key)) tileStats.prebakeTiles++;
+      }
     }
   }
   tileStats.prebakeMs += performance.now() - t0;
@@ -562,6 +642,7 @@ function prebakeTerrainAtPlayer(ring){
 
 // ゲーム開始の入口：テクスチャの読み込みが終わる（失敗も含む）のを待ち、スポーン周辺（画面＋1周）を先に焼いてから cb を呼ぶ。
 // 読み込みが CONFIG.TILE_START_WAIT_MS を超えて終わらない時は、単色タイルのまま開始する（そのうち焼き込みに切り替わる）。
+// 鉄道・河川はテクスチャに依存しないので、どちらの場合も先に焼く。
 function terrainStartWhenReady(cb){
   const t0 = performance.now();
   const tick = ()=>{
@@ -571,6 +652,7 @@ function terrainStartWhenReady(cb){
     }
     if(performance.now() - t0 > CONFIG.TILE_START_WAIT_MS){
       console.warn('[terrain] テクスチャの読み込みが終わらないため、単色タイルで開始します');
+      prebakeTerrainAtPlayer(1); // テクスチャ未準備のため、鉄道・河川だけが焼かれる
       cb(); return;
     }
     setTimeout(tick, 30);
@@ -580,121 +662,218 @@ function terrainStartWhenReady(cb){
 
 // タイルの状態（検証・開発確認用）。canvasの合計ピクセル数は、キャッシュ中のタイル＋プール＋作業canvas。
 function terrainTileInfo(){
-  let pxTex = 0, pxSolid = 0, pxPool = 0;
+  let pxTex = 0, pxSolid = 0, pxPool = 0, pxRail = 0, pxRiver = 0;
   for(const e of texTiles.values()) pxTex += e.cv.width * e.cv.height;
   for(const e of solidTiles.values()) pxSolid += e.cv.width * e.cv.height;
-  tilePoolTex.forEach(cv => { pxPool += cv.width * cv.height; }); tilePoolSolid.forEach(cv => { pxPool += cv.width * cv.height; });
+  if(railLayer) for(const e of railLayer.tiles.values()) pxRail += e.cv.width * e.cv.height;
+  if(riverLayer) for(const e of riverLayer.tiles.values()) pxRiver += e.cv.width * e.cv.height;
+  tilePoolTex.forEach(cv => { pxPool += cv.width * cv.height; }); tilePoolSolid.forEach(cv => { pxPool += cv.width * cv.height; }); tilePoolLine.forEach(cv => { pxPool += cv.width * cv.height; });
   const pxScratch = tileScratch ? tileScratch.width * tileScratch.height : 0;
-  return { tex: texTiles.size, solid: solidTiles.size, empty: tileEmpty.size, poolTex: tilePoolTex.length, poolSolid: tilePoolSolid.length,
-           pxTex, pxSolid, pxPool, pxScratch, pxTotal: pxTex + pxSolid + pxPool + pxScratch, tilesX, tilesY, tileWorldPx, texturesReady: tileTexturesReady, frame: tileFrame,
-           stats: Object.assign({}, tileStats) };
+  const lay = (l)=> l ? { tiles: l.tiles.size, np: l.np, nv: l.nv, segs: l.refs.length, indexMs: l.indexMs, indexBytes: l.bytes, nonEmpty: (()=>{ let n = 0; for(let i = 0; i + 1 < l.tileStart.length; i++) if(l.tileStart[i+1] > l.tileStart[i]) n++; return n; })(), grid: [l.g.ntx, l.g.nty] } : null;
+  return { tex: texTiles.size, solid: solidTiles.size, empty: tileEmpty.size, rail: railLayer ? railLayer.tiles.size : 0, river: riverLayer ? riverLayer.tiles.size : 0,
+           poolTex: tilePoolTex.length, poolSolid: tilePoolSolid.length, poolLine: tilePoolLine.length,
+           pxTex, pxSolid, pxRail, pxRiver, pxPool, pxScratch, pxTotal: pxTex + pxSolid + pxRail + pxRiver + pxPool + pxScratch,
+           tilesX, tilesY, tileWorldPx, texturesReady: tileTexturesReady, frame: tileFrame,
+           railLayer: lay(railLayer), riverLayer: lay(riverLayer), stats: Object.assign({}, tileStats) };
 }
 
-// ==== 鉄道路線の描画（rail_data.js の RAIL_ROUTES を使用） ====
-// 路線はプレイヤー位置に関わらず変化しない静的情報なので、起動時に1回だけオフスクリーンcanvasへ描画し、
-// 毎フレームはそのcanvasをdrawImageで貼るだけにする（地形のタイルとは別に、起動時に1回だけ描く方式）。
+// ======================================================================
+// 鉄道・河川（線）のタイル
+// 以前は県全体を0.5倍の巨大canvas（鉄道・河川それぞれ1枚）に起動時に描いていたが、県が大きいとメモリが破綻するため、
+// 地形と同じタイル格子（CONFIG.TILE_WORLD_PX、原点も地形と同じ）の「画面に映る範囲のタイルだけを、必要な時に描いてキャッシュする」方式にした。
+//   線タイル：T×0.5 canvas px（現状 100×100。旧canvasと同じ0.5倍）。線は旧canvasと同じ式（(ワールド座標 - 原点)×0.5）で描く。
+//   線の索引（CSR）：起動時に、線分を「触れるタイル」へ登録しておく。タイルを描く時は、そのタイルに触れる線分だけを元の順序で描く。
+//   描画順（重なり順）：鉄道は 私鉄→JR在来線→新幹線（各データ順）、河川は鉄道より下。旧canvasと同じ。
+// 線の連続性：1本の折れ線を丸ごと描かず、タイルに触れる連続した線分を1つのパスにまとめ、前後に1頂点ずつ余分に含めて描く
+// （lineJoin / lineCap が旧canvasと同じ見た目になる。タイルの範囲外へはみ出す部分は canvas の枠でクリップされる）。
+// 線は不透明・破線なしなので、タイル境界での二重描画・破線の位相合わせは不要。
+// ======================================================================
+const LINE_TILE_SCALE = 0.5; // 線タイルの解像度（旧・鉄道/河川canvasと同じ0.5倍）
+// 線タイルには、周囲に1canvas pxの余白（隣のタイルの線の続き）を付けて描く。貼る時はタイルの矩形でクリップして余白ごと拡大するので、
+// 半透明の縁がタイル境界でも旧canvasと同じ補間になり、継ぎ目の薄い線が出ない（余白なしだと、境界の補間が端の画素のコピーになる）。
+const LINE_TILE_MARGIN = 1;
 // 事業者種別(operatorType)：1=新幹線, 2=JR在来線, 3=公営鉄道, 4=民営鉄道, 5=第三セクター
 // （国土数値情報 N02 の値をこのデータで実際に確認済み。3〜5はすべて「私鉄」として扱う＝地下鉄含む）
 const RAIL_OPERATOR_SHINKANSEN = 1, RAIL_OPERATOR_JR = 2; // 3,4,5はまとめて私鉄
-
-const RAIL_RASTER_SCALE = 0.5; // ワールド座標に対する縮小率（線の描画なのでlanduseラスターより高めでも軽い）
-// 種別ごとの色・太さ（太さはワールドpx基準。ラスターへ描くときはRAIL_RASTER_SCALEを掛けて縮小する）
+// 種別ごとの色・太さ（太さはワールドpx基準。タイルへ描くときは LINE_TILE_SCALE を掛けて縮小する）
 const RAIL_STYLE = {
   shinkansen: { color: '#ff3b30', width: 5 }, // 新幹線：太め、目立つ色
   jr:         { color: '#0f7a3d', width: 3 }, // JR在来線：中間の太さ、JRらしい緑
   private:    { color: '#8e5bc9', width: 2 }, // 私鉄（公営・民営・第三セクター、地下鉄含む）：やや細め、別の色
 };
-
-let railCanvas = null, railCanvasOriginX = 0, railCanvasOriginY = 0;
-function buildRailCanvas(){
-  if(typeof RAIL_ROUTES === 'undefined') return; // rail_data.js が読み込まれていない場合は何もしない
-
-  // 路線を3種類に分類
-  const byType = { shinkansen: [], jr: [], private: [] };
-  for(const route of RAIL_ROUTES){
-    if(route.operatorType === RAIL_OPERATOR_SHINKANSEN) byType.shinkansen.push(route);
-    else if(route.operatorType === RAIL_OPERATOR_JR) byType.jr.push(route);
-    else byType.private.push(route); // 3(公営)/4(民営)/5(第三セクター) はすべて私鉄扱い（地下鉄含む）
-
-  }
-
-  // 東京都のワールド座標bbox（landuseラスターと同じ範囲）にオフスクリーンcanvasを用意
-  const originX = worldMinX, originY = worldMinY;
-  const w = Math.ceil(WORLD_W * RAIL_RASTER_SCALE) + 2;
-  const h = Math.ceil(WORLD_H * RAIL_RASTER_SCALE) + 2;
-  const rc = document.createElement('canvas');
-  rc.width = w; rc.height = h;
-  const rctx = rc.getContext('2d');
-  rctx.lineCap = 'round';
-  rctx.lineJoin = 'round';
-
-  function drawRoutes(routes, style){
-    rctx.strokeStyle = style.color;
-    rctx.lineWidth = Math.max(1, style.width * RAIL_RASTER_SCALE);
-    for(const route of routes){
-      const coords = route.coords;
-      if(!coords || coords.length < 2) continue;
-      rctx.beginPath();
-      for(let i=0; i<coords.length; i++){
-        const lat = coords[i][0], lon = coords[i][1]; // rail_data.jsの座標は[lat,lon]の順
-        const rx = (worldX(lon) - originX) * RAIL_RASTER_SCALE;
-        const ry = (worldY(lat) - originY) * RAIL_RASTER_SCALE;
-        if(i===0) rctx.moveTo(rx, ry); else rctx.lineTo(rx, ry);
-      }
-      rctx.stroke();
-    }
-  }
-  // 重ね順：私鉄→JR在来線→新幹線の順に描き、主要な路線ほど上に来るようにする
-  drawRoutes(byType.private, RAIL_STYLE.private);
-  drawRoutes(byType.jr, RAIL_STYLE.jr);
-  drawRoutes(byType.shinkansen, RAIL_STYLE.shinkansen);
-
-  railCanvas = rc;
-  railCanvasOriginX = originX; railCanvasOriginY = originY;
-}
-
-
-// ==== 河川の描画（river_data.js の riverData を使用） ====
-// 鉄道と全く同じ考え方：プレイヤー位置に関わらず変化しない静的情報なので、起動時に1回だけ
-// オフスクリーンcanvasへ描画し、毎フレームはそのcanvasをdrawImageで貼るだけにする。
-// 色は、地形テクスチャの水面や各RAIL_STYLEの色と衝突しないよう、
-// 白に近い薄い水色（#cdeef7）を採用した。太さはJR在来線(3)よりやや細い2.5。
+// 河川の色は、地形テクスチャの水面や各RAIL_STYLEの色と衝突しないよう、目立つ水色（#33CCFF）。太さはJR在来線(3)よりやや細い2.5。
 const RIVER_STYLE = { color: '#33CCFF', width: 2.5 };
-const RIVER_RASTER_SCALE = 0.5; // 鉄道と同じ縮小率
 
-let riverCanvas = null, riverCanvasOriginX = 0, riverCanvasOriginY = 0;
-function buildRiverCanvas(){
-  if(typeof riverData === 'undefined') return; // river_data.js が読み込まれていない場合は何もしない
+let tilePoolLine = [];            // 線タイル用canvasの再利用待ち（鉄道・河川で共用。同じ大きさ）
+let tileLinePx = 100;
+let railLayer = null, riverLayer = null; // 線のレイヤー（索引＋タイルキャッシュ）。データが無ければ null
 
-  // 東京都のワールド座標bbox（鉄道ラスターと同じ範囲・同じ原点）にオフスクリーンcanvasを用意
-  const originX = worldMinX, originY = worldMinY;
-  const w = Math.ceil(WORLD_W * RIVER_RASTER_SCALE) + 2;
-  const h = Math.ceil(WORLD_H * RIVER_RASTER_SCALE) + 2;
-  const rc = document.createElement('canvas');
-  rc.width = w; rc.height = h;
-  const rctx = rc.getContext('2d');
-  rctx.lineCap = 'round';
-  rctx.lineJoin = 'round';
-  rctx.strokeStyle = RIVER_STYLE.color;
-  rctx.lineWidth = Math.max(1, RIVER_STYLE.width * RIVER_RASTER_SCALE);
+// 線の描画スタイル（旧と同じ：lineWidth は canvas px 基準で max(1, 幅×0.5)、lineCap/lineJoin は round）
+function lineStyleOf(style){ return { color: style.color, lw: Math.max(1, style.width * LINE_TILE_SCALE) }; }
 
-  for(const river of riverData){
-    const coords = river.coords;
-    if(!coords || coords.length < 2) continue;
-    rctx.beginPath();
-    for(let i=0; i<coords.length; i++){
-      const lat = coords[i][0], lon = coords[i][1]; // river_data.jsの座標は[lat,lon]の順（鉄道データと同じ）
-      const rx = (worldX(lon) - originX) * RIVER_RASTER_SCALE;
-      const ry = (worldY(lat) - originY) * RIVER_RASTER_SCALE;
-      if(i===0) rctx.moveTo(rx, ry); else rctx.lineTo(rx, ry);
-    }
-    rctx.stroke();
-  }
-
-  riverCanvas = rc;
-  riverCanvasOriginX = originX; riverCanvasOriginY = originY;
+// 線タイルの格子の範囲：旧canvasと同じ範囲（県のbbox＋余白 MARGIN_DEG）を覆うタイル。原点・タイル幅は地形と同じなので、
+// 地形のタイル(0,0)より左上にも番号がある（負の番号）。旧canvasは県境でクリップされず、県境の外の線も画面に映るため、この範囲が必要。
+function lineGridRange(){
+  const T = tileWorldPx;
+  const tx0 = Math.floor((worldMinX - tileOriginX) / T), ty0 = Math.floor((worldMinY - tileOriginY) / T);
+  const tx1 = Math.floor((worldMaxX + 4 - tileOriginX) / T), ty1 = Math.floor((worldMaxY + 4 - tileOriginY) / T);
+  return { tx0, ty0, ntx: tx1 - tx0 + 1, nty: ty1 - ty0 + 1 };
 }
 
+// 線分(x0,y0)-(x1,y1)（ワールド座標）の、線幅の半分＋余白(pad)を含む範囲が触れるタイルを fn(tx,ty) に渡す。
+// 長い斜めの線分は bbox 全体ではなく、タイルの列ごとに「その列で線分が通る行の範囲」だけを辿る。
+function forEachTileOfSegment(g, x0, y0, x1, y1, pad, fn){
+  const T = tileWorldPx;
+  const minX = Math.min(x0, x1) - pad, maxX = Math.max(x0, x1) + pad, minY = Math.min(y0, y1) - pad, maxY = Math.max(y0, y1) + pad;
+  const tx0 = Math.max(g.tx0, Math.floor((minX - tileOriginX) / T)), tx1 = Math.min(g.tx0 + g.ntx - 1, Math.floor((maxX - tileOriginX) / T));
+  const ty0 = Math.max(g.ty0, Math.floor((minY - tileOriginY) / T)), ty1 = Math.min(g.ty0 + g.nty - 1, Math.floor((maxY - tileOriginY) / T));
+  if(tx0 > tx1 || ty0 > ty1) return;
+  if(tx0 === tx1 || ty0 === ty1){
+    for(let ty = ty0; ty <= ty1; ty++) for(let tx = tx0; tx <= tx1; tx++) fn(tx, ty);
+    return;
+  }
+  const dx = x1 - x0, dy = y1 - y0;
+  for(let tx = tx0; tx <= tx1; tx++){
+    const xl = tileOriginX + tx * T - pad, xr = tileOriginX + (tx + 1) * T + pad; // この列の範囲（余白込み）
+    let yLo, yHi;
+    if(Math.abs(dx) < 1e-9){ yLo = Math.min(y0, y1); yHi = Math.max(y0, y1); }
+    else {
+      const ta = (xl - x0) / dx, tb = (xr - x0) / dx;
+      const tLo = Math.max(0, Math.min(ta, tb)), tHi = Math.min(1, Math.max(ta, tb));
+      if(tLo > tHi) continue;
+      const ya = y0 + dy * tLo, yb = y0 + dy * tHi;
+      yLo = Math.min(ya, yb); yHi = Math.max(ya, yb);
+    }
+    const r0 = Math.max(ty0, Math.floor((yLo - pad - tileOriginY) / T)), r1 = Math.min(ty1, Math.floor((yHi + pad - tileOriginY) / T));
+    for(let ty = r0; ty <= r1; ty++) fn(tx, ty);
+  }
+}
+
+// 折れ線の集まり（描画順に並べたもの）から、線のレイヤー（頂点配列・CSR索引・タイルキャッシュ）を作る。
+//   polylines：[{ coords:[[lat,lon],...], style: スタイル番号 }, ...]（描画順）。頂点が2未満のものは旧と同じく描かない。
+//   styles：スタイル番号 → { color, lw }
+function buildLineLayer(polylines, styles){
+  const t0 = performance.now();
+  let np = 0, nv = 0;
+  for(const pl of polylines){ const c = pl.coords; if(!c || c.length < 2) continue; np++; nv += c.length; }
+  const vx = new Float64Array(nv), vy = new Float64Array(nv);
+  const polyStart = new Uint32Array(np + 1), polyStyle = new Uint8Array(np);
+  let k = 0, p = 0;
+  for(const pl of polylines){
+    const c = pl.coords; if(!c || c.length < 2) continue;
+    polyStart[p] = k; polyStyle[p] = pl.style; p++;
+    for(let i = 0; i < c.length; i++){ vx[k] = worldX(c[i][1]); vy[k] = worldY(c[i][0]); k++; } // 座標は [lat, lon] の順
+  }
+  polyStart[np] = nv;
+  const g = lineGridRange();
+  const nTiles = g.ntx * g.nty;
+  const tileStart = new Uint32Array(nTiles + 1);
+  // 線分を触れるタイルへ登録する（CSR形式）。全線分を描画順に走査するので、各タイルの中の線分も元の順序になる。
+  const S = LINE_TILE_SCALE;
+  const scan = (visit)=>{
+    for(let q = 0; q < np; q++){
+      const pad = (styles[polyStyle[q]].lw / 2 + 1 + LINE_TILE_MARGIN) / S; // 線幅の半分＋AA用の余白1px＋タイルの余白1px（ワールドpx）。lineJoin/lineCap は round なので、これ以上の張り出しは無い
+      for(let a = polyStart[q]; a + 1 < polyStart[q + 1]; a++){
+        forEachTileOfSegment(g, vx[a], vy[a], vx[a + 1], vy[a + 1], pad, (tx, ty)=> visit((ty - g.ty0) * g.ntx + (tx - g.tx0), a));
+      }
+    }
+  };
+  scan((key)=>{ tileStart[key + 1]++; });                                  // ① タイルごとの個数
+  for(let i = 0; i < nTiles; i++) tileStart[i + 1] += tileStart[i];         //    → 各タイルの開始位置
+  const refs = new Uint32Array(tileStart[nTiles]);
+  const cursor = tileStart.slice(0, nTiles);                                // 作業用（このあと捨てる）
+  scan((key, a)=>{ refs[cursor[key]++] = a; });                             // ② 線分番号（始点の頂点番号）を書き込む
+  return { g, vx, vy, polyStart, polyStyle, np, nv, styles, tileStart, refs, tiles: new Map(), statName: '', cacheMax: 300,
+           indexMs: performance.now() - t0, bytes: vx.byteLength + vy.byteLength + polyStart.byteLength + polyStyle.byteLength + tileStart.byteLength + refs.byteLength };
+}
+
+function lineKey(layer, tx, ty){
+  const g = layer.g;
+  if(tx < g.tx0 || ty < g.ty0 || tx >= g.tx0 + g.ntx || ty >= g.ty0 + g.nty) return -1;
+  return (ty - g.ty0) * g.ntx + (tx - g.tx0);
+}
+// そのタイルに触れる線分があるか（無いタイルは canvas を確保しない＝「空」。索引が空の印を兼ねる）
+function lineTileHasSegments(layer, key){ return key >= 0 && layer.tileStart[key + 1] > layer.tileStart[key]; }
+// 頂点番号 a を含む折れ線の番号（polyStart を二分探索）
+function polyOfVertex(layer, a){
+  let lo = 0, hi = layer.np - 1;
+  while(lo < hi){ const mid = (lo + hi + 1) >> 1; if(layer.polyStart[mid] <= a) lo = mid; else hi = mid - 1; }
+  return lo;
+}
+
+// 線タイル（余白つき 102×102）を描く。そのタイルに触れる線分だけを元の順序で、連続する線分を1つのパスにまとめて描く。
+function bakeLineTile(layer, tx, ty, key){
+  if(!lineTileHasSegments(layer, key)) return null;
+  const t0 = performance.now();
+  const cv = takeTileCanvas(tilePoolLine, tileLinePx + 2 * LINE_TILE_MARGIN);
+  const c2d = cv._ctx, S = LINE_TILE_SCALE;
+  const offX = tileLinePx * tx, offY = tileLinePx * ty; // このタイルのcanvas原点（地形タイルと同じ格子）
+  c2d.setTransform(1, 0, 0, 1, 0, 0);
+  c2d.lineCap = 'round'; c2d.lineJoin = 'round';
+  const refs = layer.refs, vx = layer.vx, vy = layer.vy, polyStart = layer.polyStart;
+  const e = layer.tileStart[key + 1];
+  let i = layer.tileStart[key], curStyle = -1;
+  while(i < e){
+    const a0 = refs[i];
+    let j = i; while(j + 1 < e && refs[j + 1] === refs[j] + 1) j++; // 連続する線分（同じ折れ線の中で隣り合う線分）を1つのパスに
+    const a1 = refs[j];
+    const p = polyOfVertex(layer, a0), pStart = polyStart[p], pEnd = polyStart[p + 1];
+    const st = layer.polyStyle[p];
+    if(st !== curStyle){ c2d.strokeStyle = layer.styles[st].color; c2d.lineWidth = layer.styles[st].lw; curStyle = st; }
+    const vFirst = (a0 > pStart) ? a0 - 1 : a0;        // 前に1頂点余分に
+    const vLast = (a1 + 2 < pEnd) ? a1 + 2 : a1 + 1;   // 後ろに1頂点余分に
+    c2d.beginPath();
+    for(let v = vFirst; v <= vLast; v++){
+      const x = (vx[v] - tileOriginX) * S - offX + LINE_TILE_MARGIN, y = (vy[v] - tileOriginY) * S - offY + LINE_TILE_MARGIN; // 旧と同じ式：(ワールド座標 - 原点)×0.5（＋余白ぶん）
+      if(v === vFirst) c2d.moveTo(x, y); else c2d.lineTo(x, y);
+    }
+    c2d.stroke();
+    i = j + 1;
+  }
+  const ms = performance.now() - t0;
+  const st2 = layer.statName;
+  tileStats[st2 + 'Bakes']++; tileStats[st2 + 'BakeMs'] += ms; if(ms > tileStats[st2 + 'BakeMaxMs']) tileStats[st2 + 'BakeMaxMs'] = ms;
+  return cv;
+}
+function bakeAndStoreLineTile(layer, tx, ty, key){
+  const cv = bakeLineTile(layer, tx, ty, key);
+  if(!cv) return false;
+  layer.tiles.set(key, { cv, last: tileFrame });
+  evictTiles(layer.tiles, tilePoolLine, layer.cacheMax, layer.statName === 'rail' ? 'evictionsRail' : 'evictionsRiver');
+  return true;
+}
+
+// 起動時（initTerrain）：鉄道・河川の索引を作る（巨大canvasは作らない）。県データを読み込むたびに作り直す。
+function buildLineLayers(){
+  tilePoolLine = [];
+  tileLinePx = Math.round(tileWorldPx * LINE_TILE_SCALE);
+  railLayer = null; riverLayer = null;
+  if(typeof RAIL_ROUTES !== 'undefined'){
+    // 路線を3種類に分類し、描画順（私鉄→JR在来線→新幹線）に並べる
+    const byType = [[], [], []]; // 0=私鉄 1=JR 2=新幹線
+    for(const route of RAIL_ROUTES){
+      if(route.operatorType === RAIL_OPERATOR_SHINKANSEN) byType[2].push({ coords: route.coords, style: 2 });
+      else if(route.operatorType === RAIL_OPERATOR_JR) byType[1].push({ coords: route.coords, style: 1 });
+      else byType[0].push({ coords: route.coords, style: 0 }); // 3(公営)/4(民営)/5(第三セクター) はすべて私鉄扱い（地下鉄含む）
+    }
+    railLayer = buildLineLayer([].concat(byType[0], byType[1], byType[2]),
+      [lineStyleOf(RAIL_STYLE.private), lineStyleOf(RAIL_STYLE.jr), lineStyleOf(RAIL_STYLE.shinkansen)]);
+    railLayer.statName = 'rail'; railLayer.cacheMax = CONFIG.TILE_CACHE_MAX_RAIL;
+  }
+  if(typeof riverData !== 'undefined'){
+    riverLayer = buildLineLayer(riverData.map(r => ({ coords: r.coords, style: 0 })), [lineStyleOf(RIVER_STYLE)]);
+    riverLayer.statName = 'river'; riverLayer.cacheMax = CONFIG.TILE_CACHE_MAX_RIVER;
+  }
+  // 索引（と頂点配列）に取り込み済みなので、元のデータ（頂点が[lat,lon]の配列の配列）への参照を切ってメモリを解放する。
+  // 以降、鉄道・河川のデータは railLayer / riverLayer だけが持つ。
+  if(typeof RAIL_ROUTES !== 'undefined') RAIL_ROUTES = null;
+  if(typeof riverData !== 'undefined') riverData = null;
+}
+function disposeLineLayers(){
+  for(const layer of [railLayer, riverLayer]){ if(layer) for(const e of layer.tiles.values()) disposeTileCanvas(e.cv); }
+  tilePoolLine.forEach(disposeTileCanvas); tilePoolLine = [];
+  railLayer = null; riverLayer = null;
+}
 
 // ======================================================================
 // 地形まわりの初期化（県データ読み込み完了後に、main.jsのstartGame()から1回だけ呼ばれる）
@@ -708,6 +887,5 @@ function initTerrain(){
   buildLanduseGrid();               // 土地利用メッシュ格子（RLEをUint8Arrayへ直接展開。展開後 MESH_RUNS_FLAT は null）
   initTileSystem();                 // 地形タイル（原点・タイル数・作業canvas・色/テクスチャの対応）。タイル本体は draw のたびに必要な分だけ作る
   startTextureLoads();              // テクスチャ画像の読み込み開始（12枚そろったらパターンを作り、タイルのbakeが始まる）
-  buildRailCanvas();                // 鉄道canvas
-  buildRiverCanvas();               // 河川canvas
+  buildLineLayers();                // 鉄道・河川の線の索引（CSR）。巨大canvasは作らず、タイルは draw のたびに必要な分だけ作る
 }
