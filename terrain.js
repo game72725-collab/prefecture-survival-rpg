@@ -531,7 +531,8 @@ function tileViewRange(pWX, pWY, z){ // 地形の格子の範囲（0〜tilesX-1,
 }
 // タイルの端の画面座標（整数pxにスナップ）。地形・鉄道・河川のタイルで共通の式なので、境界は同じ丸め値になり、隙間も重なりも出ず、
 // 地形と線の位置関係もずれない。幅は呼び出し側で「次のタイルの端－このタイルの端」として求める。
-function snapTileEdge(origin, idx, pW, halfScreen, z){ return Math.round(halfScreen + (origin + idx * tileWorldPx - pW) * z); }
+// size を省略すると地形タイルの大きさ（tileWorldPx）。霧タイルなど、別の大きさのタイル（地形タイルの整数倍）にも同じ式で使う。
+function snapTileEdge(origin, idx, pW, halfScreen, z, size){ return Math.round(halfScreen + (origin + idx * (size || tileWorldPx) - pW) * z); }
 
 // ---- 毎フレーム：キャッシュの更新（フレーム番号を進め、必要なタイルのbakeを予約・実行する）。draw() の最初に1回呼ぶ ----
 function updateTileCaches(pWX, pWY, z, textureOn, railOn, riverOn){
@@ -886,6 +887,7 @@ function initTerrain(){
   for(const k of Object.keys(TEXTURE_IMAGES)) delete TEXTURE_IMAGES[k];
   buildLanduseGrid();               // 土地利用メッシュ格子（RLEをUint8Arrayへ直接展開。展開後 MESH_RUNS_FLAT は null）
   initTileSystem();                 // 地形タイル（原点・タイル数・作業canvas・色/テクスチャの対応）。タイル本体は draw のたびに必要な分だけ作る
+  resetFogTiles();                  // 霧タイル（探索済み）も、原点が変わるので全部破棄する（main.js）
   startTextureLoads();              // テクスチャ画像の読み込み開始（12枚そろったらパターンを作り、タイルのbakeが始まる）
   buildLineLayers();                // 鉄道・河川の線の索引（CSR）。巨大canvasは作らず、タイルは draw のたびに必要な分だけ作る
 }

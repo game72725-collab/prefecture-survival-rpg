@@ -33,11 +33,32 @@ function updateBoostHud(now){
 // 宣言だけここに置き、initMinimap()（main.jsのstartGame()から1回だけ呼ばれる）で作る。
 const MINI_W = 92;
 let MINI_H = 0, miniFogCanvas = null, miniFogCtx = null;
+let miniMaskCanvas = null, miniMaskCtx = null; // ミニマップの「探索済み」マスク（MINI_W×MINI_H のまま。霧タイルとは別に、同じ書き込みを直接行う）
 function initMinimap(){
   MINI_H = Math.round(MINI_W * (WORLD_H / WORLD_W));
   miniFogCanvas = document.createElement('canvas');
   miniFogCanvas.width = MINI_W; miniFogCanvas.height = MINI_H;
   miniFogCtx = miniFogCanvas.getContext('2d');
+  miniMaskCanvas = document.createElement('canvas');
+  miniMaskCanvas.width = MINI_W; miniMaskCanvas.height = MINI_H;
+  miniMaskCtx = miniMaskCanvas.getContext('2d');
+}
+// ミニマップの探索済みマスクをクリアする（ラン開始・再プレイ・県データの読み込み直しで、霧タイルの破棄と一緒に呼ばれる）
+function resetMiniFog(){ if(miniMaskCtx) miniMaskCtx.clearRect(0, 0, MINI_W, MINI_H); }
+// 霧を晴らす書き込み（main.js の revealFogAt から呼ばれる）：メインの霧タイルと同じ操作（放射グラデーションの円）を、
+// ミニマップの解像度（ワールド→ミニマップの縮尺）で直接行う。以前は、巨大なマスクを毎フレーム縮小コピーして作っていた。
+function revealMiniFog(wx, wy){
+  if(!miniMaskCtx) return;
+  const mx = ((wx - worldMinX) / WORLD_W) * MINI_W, my = ((wy - worldMinY) / WORLD_H) * MINI_H; // drawMinimap の toMini と同じ変換
+  const r = CONFIG.FOG_REVEAL_RADIUS_BASE_PX * CONFIG.ZOOM_FACTOR * (MINI_W / WORLD_W);
+  const grad = miniMaskCtx.createRadialGradient(mx, my, 0, mx, my, r);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.75, 'rgba(255,255,255,1)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  miniMaskCtx.fillStyle = grad;
+  miniMaskCtx.beginPath();
+  miniMaskCtx.arc(mx, my, r, 0, Math.PI*2);
+  miniMaskCtx.fill();
 }
 
 function drawMinimap(pWX, pWY){
@@ -67,12 +88,12 @@ function drawMinimap(pWX, pWY){
   ctx.fill();
   ctx.strokeStyle = '#274a2b'; ctx.lineWidth = 1; ctx.stroke();
 
-  // 2) 探索済み／未探索の霧オーバーレイ（メインマップと共通のmaskCanvasをそのまま使用）
+  // 2) 探索済み／未探索の霧オーバーレイ（ミニマップ専用の探索済みマスク miniMaskCanvas を使用）
   miniFogCtx.clearRect(0, 0, MINI_W, MINI_H);
   miniFogCtx.fillStyle = 'rgba(4,8,14,0.88)';
   miniFogCtx.fillRect(0, 0, MINI_W, MINI_H);
   miniFogCtx.globalCompositeOperation = 'destination-out';
-  miniFogCtx.drawImage(maskCanvas, 0, 0, maskW, maskH, 0, 0, MINI_W, MINI_H);
+  miniFogCtx.drawImage(miniMaskCanvas, 0, 0);
   miniFogCtx.globalCompositeOperation = 'source-over';
   ctx.drawImage(miniFogCanvas, x0, y0);
 

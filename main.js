@@ -59,6 +59,9 @@ const CONFIG = {
   TILE_CACHE_MAX_SOLID: 400,   // 単色タイルのキャッシュ上限（枚）
   TILE_CACHE_MAX_RAIL: 300,    // 鉄道タイルのキャッシュ上限（枚。線が1本も触れない空タイルは数えない）
   TILE_CACHE_MAX_RIVER: 300,   // 河川タイルのキャッシュ上限（枚。同上）
+  // ---- 霧（Fog of War）のタイル（main.js） ----
+  FOG_TILE_WORLD_PX: 1000,     // 霧タイルの大きさ（ワールドpx）。地形タイルの整数倍にすること（同じ格子に揃う）。解像度は FOG_RES_SCALE(0.2倍)なので1枚は 200×200 canvas px（＋余白）
+  FOG_TILE_MAX: 300,           // 霧タイルの安全上限（枚。1枚約0.16MB＝約48MB）。探索済みの情報なのでLRUでは捨てない。上限に達したら新しいタイルは作らず、警告を1回だけ出す
   TILE_START_WAIT_MS: 5000,    // ゲーム開始前にテクスチャの読み込みを待つ最大時間。超えたら単色タイルのまま開始する
   ZOOM_FACTOR: 1.4,        // 画面表示の拡大率。緯度経度→画面座標の変換すべてに掛かる
   SPEED_NORMAL: 3.4,       // 通常地形（建物用地・道路・鉄道・農地・その他など）での移動速度（ズーム未適用の基準値）
@@ -159,43 +162,130 @@ const wrongToast = document.getElementById('wrongToast');
 let W = 0, H = 0;
 let fogCanvas, fogCtx;
 
-// Fog of War 用マスク（ワールド全体を縮小解像度で保持。晴らした場所は永続的に白く塗る）
+// ==== Fog of War（探索済みの記録）：霧タイル ====
+// 以前は、ワールド全体を0.2倍で覆う巨大なマスクcanvasに「晴らした場所」を白く塗っていたが、県が大きいとメモリが破綻するため、
+// 「プレイヤーが探索の書き込みで触れた場所のタイルだけ」を作る方式にした。
+//   タイル：ワールド座標で CONFIG.FOG_TILE_WORLD_PX（初期値1000）ごとの正方形。原点は地形タイルと同じ（県のbbox角）。
+//           解像度は FOG_RES_SCALE（0.2倍。旧マスクと同じ）。1枚は 200×200 canvas px ＋ 上下左右1pxの余白（202×202）。
+//   遅延確保：書き込みが触れたタイルだけ canvas を作る。触れていないタイルは canvas を持たず、「完全に未探索（霧が濃い）」として扱う。
+//   破棄しない：探索済みの情報そのものなので、LRUでは捨てない。ラン開始・再プレイ・県データの読み込み直し（resetFogTiles）で全部破棄する。
+//   安全上限：CONFIG.FOG_TILE_MAX。超えたら新しいタイルは作らない（既存の探索済みは保持）。
 const FOG_RES_SCALE = 0.2;
-let maskCanvas, maskCtx, maskW, maskH;
+const FOG_TILE_MARGIN = 1;          // タイルの上下左右の余白（canvas px）。画面へ貼る時に境界の補間が連続するように、余白にも同じ書き込みを行う
+let fogTileWorldPx = 1000, fogTilePx = 200;
+let fogTiles = new Map();           // key → { cv, ctx }
+let fogTileWarned = false;
+const fogStats = { created: 0, createMs: 0, createMaxMs: 0, revealMs: 0, reveals: 0, composeMs: 0, capped: 0 };
 
 function resize(){
   W = wrap.clientWidth; H = wrap.clientHeight;
   canvas.width = W; canvas.height = H;
+  if(fogCanvas){ fogCanvas.width = 0; fogCanvas.height = 0; } // 前の合成用canvasを確実に解放する（resizeのたびに作り直すため）
   fogCanvas = document.createElement('canvas');
   fogCanvas.width = W; fogCanvas.height = H;
   fogCtx = fogCanvas.getContext('2d');
 }
 window.addEventListener('resize', resize);
 
-function initFogMask(){
-  maskW = Math.max(1, Math.ceil(WORLD_W * FOG_RES_SCALE));
-  maskH = Math.max(1, Math.ceil(WORLD_H * FOG_RES_SCALE));
-  maskCanvas = document.createElement('canvas');
-  maskCanvas.width = maskW; maskCanvas.height = maskH;
-  maskCtx = maskCanvas.getContext('2d');
+function fogKey(tx, ty){ return (ty + 512) * 4096 + (tx + 512); }
+
+// 霧タイルをすべて破棄する（width/height=0 で解放）。ラン開始（initGame）・再プレイ・県データの読み込み直し（initTerrain）で呼ぶ。
+// 探索状態は引き継がれない。ミニマップの霧も同時にクリアする。
+function resetFogTiles(){
+  for(const t of fogTiles.values()){ t.cv.width = 0; t.cv.height = 0; t.ctx = null; }
+  fogTiles = new Map();
+  fogTileWarned = false;
+  const F = Math.round((CONFIG.FOG_TILE_WORLD_PX || 1000) / tileWorldPx) * tileWorldPx;
+  fogTileWorldPx = (F >= tileWorldPx) ? F : tileWorldPx; // 地形タイルの整数倍に揃える
+  fogTilePx = Math.round(fogTileWorldPx * FOG_RES_SCALE);
+  for(const k of Object.keys(fogStats)) fogStats[k] = 0;
+  if(typeof resetMiniFog === 'function') resetMiniFog();
 }
 
-function worldToMask(wx, wy){
-  return [(wx - worldMinX) * FOG_RES_SCALE, (wy - worldMinY) * FOG_RES_SCALE];
+// タイルを取得する。create=true なら、無い場合に作る（上限に達していたら null を返し、警告を1回だけ出す）。
+function getFogTile(tx, ty, create){
+  const key = fogKey(tx, ty);
+  let t = fogTiles.get(key);
+  if(t || !create) return t || null;
+  if(fogTiles.size >= CONFIG.FOG_TILE_MAX){
+    fogStats.capped++;
+    if(!fogTileWarned){ fogTileWarned = true; console.warn('[fog] 霧タイルが上限(' + CONFIG.FOG_TILE_MAX + '枚)に達しました。新しい場所の探索は記録されません（探索済みの場所は保持されます）'); }
+    return null;
+  }
+  const t0 = performance.now();
+  const size = fogTilePx + 2 * FOG_TILE_MARGIN;
+  const cv = document.createElement('canvas');
+  cv.width = size; cv.height = size;
+  t = { cv, ctx: cv.getContext('2d') };
+  fogTiles.set(key, t);
+  const ms = performance.now() - t0;
+  fogStats.created++; fogStats.createMs += ms; if(ms > fogStats.createMaxMs) fogStats.createMaxMs = ms;
+  return t;
 }
 
+// 現在地周辺の霧を晴らす（永続）。旧マスクと同じ描画操作（半径 FOG_REVEAL_RADIUS_BASE_PX×ZOOM_FACTOR×FOG_RES_SCALE の
+// 放射グラデーションの円。中心〜75%は不透明な白、縁に向かって透明）を、円のbboxが触れるすべてのタイルに行う。
 function revealFogAt(wx, wy){
-  const [mx, my] = worldToMask(wx, wy);
+  const t0 = CONFIG.DEBUG ? performance.now() : 0;
+  const S = FOG_RES_SCALE, F = fogTileWorldPx, M = FOG_TILE_MARGIN;
   // 霧の解除半径はZOOM_FACTORに連動（ズームしても現実換算の視界範囲が変わらないようにする）
-  const r = CONFIG.FOG_REVEAL_RADIUS_BASE_PX * CONFIG.ZOOM_FACTOR * FOG_RES_SCALE;
-  const grad = maskCtx.createRadialGradient(mx, my, 0, mx, my, r);
-  grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.75, 'rgba(255,255,255,1)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  maskCtx.fillStyle = grad;
-  maskCtx.beginPath();
-  maskCtx.arc(mx, my, r, 0, Math.PI*2);
-  maskCtx.fill();
+  const rWorld = CONFIG.FOG_REVEAL_RADIUS_BASE_PX * CONFIG.ZOOM_FACTOR;
+  const r = rWorld * S;
+  const pad = rWorld + M / S; // 円＋タイルの余白（ワールドpx）
+  const tx0 = Math.floor((wx - pad - tileOriginX) / F), tx1 = Math.floor((wx + pad - tileOriginX) / F);
+  const ty0 = Math.floor((wy - pad - tileOriginY) / F), ty1 = Math.floor((wy + pad - tileOriginY) / F);
+  for(let ty = ty0; ty <= ty1; ty++){
+    for(let tx = tx0; tx <= tx1; tx++){
+      const t = getFogTile(tx, ty, true);
+      if(!t) continue;
+      const mx = (wx - tileOriginX) * S - tx * fogTilePx + M, my = (wy - tileOriginY) * S - ty * fogTilePx + M; // タイル内のcanvas座標（余白ぶんを含む）
+      const c2d = t.ctx;
+      const grad = c2d.createRadialGradient(mx, my, 0, mx, my, r);
+      grad.addColorStop(0, 'rgba(255,255,255,1)');
+      grad.addColorStop(0.75, 'rgba(255,255,255,1)');
+      grad.addColorStop(1, 'rgba(255,255,255,0)');
+      c2d.fillStyle = grad;
+      c2d.beginPath();
+      c2d.arc(mx, my, r, 0, Math.PI*2);
+      c2d.fill();
+    }
+  }
+  if(typeof revealMiniFog === 'function') revealMiniFog(wx, wy); // ミニマップの霧にも、同じ書き込みを直接行う（ui.js）
+  if(CONFIG.DEBUG){ fogStats.reveals++; fogStats.revealMs += performance.now() - t0; }
+}
+
+// 霧の合成用canvas（fogCtx。destination-out の状態）へ、画面に映る範囲の霧タイルを貼る。
+// 貼り付け先の端は、地形・鉄道・河川のタイルと同じスナップ関数（snapTileEdge）。余白ごと拡大して、タイルの矩形でクリップする
+// （destination-out は重ねるほど消えるので、クリップで隣のタイルと重ならないようにする）。
+// タイルが無い範囲は何も貼らない＝霧の色のまま（旧：マスクが未探索・マスクの外と同じ見た目）。
+function drawFogTiles(pWX, pWY, z){
+  if(fogTiles.size === 0) return;
+  const t0 = CONFIG.DEBUG ? performance.now() : 0;
+  const F = fogTileWorldPx, M = FOG_TILE_MARGIN;
+  const halfW = W/(2*z) + 2, halfH = H/(2*z) + 2;
+  const vx0 = Math.floor((pWX - halfW - tileOriginX) / F), vx1 = Math.floor((pWX + halfW - tileOriginX) / F);
+  const vy0 = Math.floor((pWY - halfH - tileOriginY) / F), vy1 = Math.floor((pWY + halfH - tileOriginY) / F);
+  for(let ty = vy0; ty <= vy1; ty++){
+    for(let tx = vx0; tx <= vx1; tx++){
+      const t = fogTiles.get(fogKey(tx, ty));
+      if(!t) continue;
+      const x0 = snapTileEdge(tileOriginX, tx, pWX, W/2, z, F), x1 = snapTileEdge(tileOriginX, tx + 1, pWX, W/2, z, F);
+      const y0 = snapTileEdge(tileOriginY, ty, pWY, H/2, z, F), y1 = snapTileEdge(tileOriginY, ty + 1, pWY, H/2, z, F);
+      const dw = x1 - x0, dh = y1 - y0;
+      if(dw <= 0 || dh <= 0) continue;
+      const kx = dw / fogTilePx, ky = dh / fogTilePx;
+      fogCtx.save();
+      fogCtx.beginPath(); fogCtx.rect(x0, y0, dw, dh); fogCtx.clip();
+      fogCtx.drawImage(t.cv, x0 - M * kx, y0 - M * ky, t.cv.width * kx, t.cv.height * ky);
+      fogCtx.restore();
+    }
+  }
+  if(CONFIG.DEBUG) fogStats.composeMs += performance.now() - t0;
+}
+// 霧タイルの状態（検証・開発確認用）
+function fogTileInfo(){
+  let px = 0; for(const t of fogTiles.values()) px += t.cv.width * t.cv.height;
+  return { tiles: fogTiles.size, px, bytes: px * 4, tileWorldPx: fogTileWorldPx, tilePx: fogTilePx, warned: fogTileWarned, stats: Object.assign({}, fogStats) };
 }
 
 const PLAYER_R_PX = 14, CHEST_SIZE_PX = 24, BOSS_SIZE_PX = 30;
@@ -250,7 +340,7 @@ function offsetLatLon(centerLat, centerLon, distKm, angleRad){
 // 宝箱の中身：'time'（+10秒）／'speed'（スピードアップ）／'fifty'（✂️50-50）／'compass'（🧭県庁サーチ）。抽選は items.js の pickChestItem()。
 function initGame(){
   resize();
-  initFogMask();
+  resetFogTiles(); // 探索状態を初期化（霧タイルをすべて破棄。前のランの探索は引き継がない）
 
   // ① スポーン地点：県庁から直線距離1〜3km圏内のランダムな地点
   const spawnDist = randRange(1, 3);
@@ -594,10 +684,7 @@ function draw(){
   fogCtx.fillStyle = 'rgba(4,8,14,0.93)';
   fogCtx.fillRect(0,0,W,H);
   fogCtx.globalCompositeOperation = 'destination-out';
-  const sx = (pWX - W/(2*z) - worldMinX) * FOG_RES_SCALE;
-  const sy = (pWY - H/(2*z) - worldMinY) * FOG_RES_SCALE;
-  const sw = (W/z) * FOG_RES_SCALE, sh = (H/z) * FOG_RES_SCALE;
-  fogCtx.drawImage(maskCanvas, sx, sy, sw, sh, 0, 0, W, H);
+  drawFogTiles(pWX, pWY, z); // 画面に映る範囲の霧タイル（探索済み）で、霧を消す
   fogCtx.globalCompositeOperation = 'source-over';
   ctx.drawImage(fogCanvas, 0, 0);
   profLap('fog');
