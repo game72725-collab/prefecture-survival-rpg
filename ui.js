@@ -29,28 +29,49 @@ function updateBoostHud(now){
   }
 }
 
-// ミニマップの高さ・霧合成用canvasはワールドの縦横比（県データ読み込み後に確定）で決まるため、
-// 宣言だけここに置き、initMinimap()（main.jsのstartGame()から1回だけ呼ばれる）で作る。
-const MINI_W = 92;
-let MINI_H = 0, miniFogCanvas = null, miniFogCtx = null;
-let miniMaskCanvas = null, miniMaskCtx = null; // ミニマップの「探索済み」マスク（MINI_W×MINI_H のまま。霧タイルとは別に、同じ書き込みを直接行う）
+// ==== ミニマップ ====
+// 県の大きさ・縦横比によらない固定の正方形（CONFIG.MINIMAP_SIZE）。県の外接矩形（ワールドの幅・高さ）を、縦横比を保って
+// 正方形に収め、中央に置く（縮尺 miniScale = MINIMAP_SIZE / max(ワールド幅, ワールド高)）。
+// 余白（外接矩形の外側）は、未探索の霧と同じ色・同じ不透明度で常に塗る（霧を晴らす書き込みを余白には行わない）ので、
+// 余白と未探索は同じ見た目になり、余白の形から県の縦横比を読み取れない。
+// 印（プレイヤー・県庁）・県境・探索の跡はすべて、同じ変換 miniX/miniY（ワールド座標→ミニマップ内の座標）を使う。
+// ワールドの大きさ・縮尺は県データ読み込み後に確定するため、宣言だけここに置き、initMinimap()（main.jsのstartGame()から1回だけ呼ばれる）で決める。
+let MINI_SIZE = 0, miniScale = 1, miniOffX = 0, miniOffY = 0;
+let miniRectX0 = 0, miniRectY0 = 0, miniRectX1 = 0, miniRectY1 = 0; // 探索の跡を書ける範囲（県の外接矩形のミニマップ上の位置。画素境界に揃える）
+let miniFogCanvas = null, miniFogCtx = null;
+let miniMaskCanvas = null, miniMaskCtx = null; // ミニマップの「探索済み」マスク（MINI_SIZE×MINI_SIZE。霧タイルとは別に、同じ書き込みを直接行う）
 function initMinimap(){
-  MINI_H = Math.round(MINI_W * (WORLD_H / WORLD_W));
+  MINI_SIZE = Math.max(1, Math.round(CONFIG.MINIMAP_SIZE));
+  miniScale = MINI_SIZE / Math.max(WORLD_W, WORLD_H);
+  miniOffX = (MINI_SIZE - WORLD_W * miniScale) / 2;
+  miniOffY = (MINI_SIZE - WORLD_H * miniScale) / 2;
+  // 端の半透明画素（境界がうっすら見える）を作らないよう、画素境界に揃える。細長い県でも最低1pxは確保する
+  miniRectX0 = Math.round(miniOffX); miniRectX1 = Math.max(miniRectX0 + 1, Math.round(miniOffX + WORLD_W * miniScale));
+  miniRectY0 = Math.round(miniOffY); miniRectY1 = Math.max(miniRectY0 + 1, Math.round(miniOffY + WORLD_H * miniScale));
   miniFogCanvas = document.createElement('canvas');
-  miniFogCanvas.width = MINI_W; miniFogCanvas.height = MINI_H;
+  miniFogCanvas.width = MINI_SIZE; miniFogCanvas.height = MINI_SIZE;
   miniFogCtx = miniFogCanvas.getContext('2d');
   miniMaskCanvas = document.createElement('canvas');
-  miniMaskCanvas.width = MINI_W; miniMaskCanvas.height = MINI_H;
+  miniMaskCanvas.width = MINI_SIZE; miniMaskCanvas.height = MINI_SIZE;
   miniMaskCtx = miniMaskCanvas.getContext('2d');
 }
+// ワールド座標 → ミニマップ内の座標（左上が(0,0)、一辺 MINI_SIZE）。ミニマップ上の描画はすべてこの変換を使う
+function miniX(wx){ return miniOffX + (wx - worldMinX) * miniScale; }
+function miniY(wy){ return miniOffY + (wy - worldMinY) * miniScale; }
 // ミニマップの探索済みマスクをクリアする（ラン開始・再プレイ・県データの読み込み直しで、霧タイルの破棄と一緒に呼ばれる）
-function resetMiniFog(){ if(miniMaskCtx) miniMaskCtx.clearRect(0, 0, MINI_W, MINI_H); }
+function resetMiniFog(){ if(miniMaskCtx) miniMaskCtx.clearRect(0, 0, MINI_SIZE, MINI_SIZE); }
 // 霧を晴らす書き込み（main.js の revealFogAt から呼ばれる）：メインの霧タイルと同じ操作（放射グラデーションの円）を、
 // ミニマップの解像度（ワールド→ミニマップの縮尺）で直接行う。以前は、巨大なマスクを毎フレーム縮小コピーして作っていた。
+// 描画半径は max(実際の縮尺の半径, CONFIG.MINIMAP_REVEAL_MIN_PX)：大きな県でも探索の跡が見えるようにする。
+// 書き込みは県の外接矩形の内側だけに制限する（余白は常に未探索の霧のまま）。
 function revealMiniFog(wx, wy){
   if(!miniMaskCtx) return;
-  const mx = ((wx - worldMinX) / WORLD_W) * MINI_W, my = ((wy - worldMinY) / WORLD_H) * MINI_H; // drawMinimap の toMini と同じ変換
-  const r = CONFIG.FOG_REVEAL_RADIUS_BASE_PX * CONFIG.ZOOM_FACTOR * (MINI_W / WORLD_W);
+  const mx = miniX(wx), my = miniY(wy); // drawMinimap と同じ変換
+  const r = Math.max(CONFIG.FOG_REVEAL_RADIUS_BASE_PX * CONFIG.ZOOM_FACTOR * miniScale, CONFIG.MINIMAP_REVEAL_MIN_PX);
+  miniMaskCtx.save();
+  miniMaskCtx.beginPath();
+  miniMaskCtx.rect(miniRectX0, miniRectY0, miniRectX1 - miniRectX0, miniRectY1 - miniRectY0);
+  miniMaskCtx.clip();
   const grad = miniMaskCtx.createRadialGradient(mx, my, 0, mx, my, r);
   grad.addColorStop(0, 'rgba(255,255,255,1)');
   grad.addColorStop(0.75, 'rgba(255,255,255,1)');
@@ -59,39 +80,38 @@ function revealMiniFog(wx, wy){
   miniMaskCtx.beginPath();
   miniMaskCtx.arc(mx, my, r, 0, Math.PI*2);
   miniMaskCtx.fill();
+  miniMaskCtx.restore();
 }
 
 function drawMinimap(pWX, pWY){
-  const x0 = W - MINI_W - 12, y0 = 12;
+  const x0 = W - MINI_SIZE - 12, y0 = 12;
   ctx.save();
   ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  ctx.fillRect(x0-4, y0-4, MINI_W+8, MINI_H+8);
+  ctx.fillRect(x0-4, y0-4, MINI_SIZE+8, MINI_SIZE+8);
   ctx.strokeStyle = '#8fa6bd'; ctx.lineWidth = 2;
-  ctx.strokeRect(x0-4, y0-4, MINI_W+8, MINI_H+8);
+  ctx.strokeRect(x0-4, y0-4, MINI_SIZE+8, MINI_SIZE+8);
 
-  ctx.beginPath(); ctx.rect(x0, y0, MINI_W, MINI_H); ctx.clip();
+  ctx.beginPath(); ctx.rect(x0, y0, MINI_SIZE, MINI_SIZE); ctx.clip();
 
   // 1) 県境ポリゴンをミニマップサイズに縮小して描画（メインマップと同じ緯度経度→ワールド座標を使い、
-  //    ミニマップ用の別スケール・別位置に変換するだけ）
-  function toMini(wx, wy){
-    return [ x0 + ((wx - worldMinX) / WORLD_W) * MINI_W, y0 + ((wy - worldMinY) / WORLD_H) * MINI_H ];
-  }
-  ctx.fillStyle = '#123a52'; // 海
-  ctx.fillRect(x0, y0, MINI_W, MINI_H);
+  //    ミニマップ用の別スケール・別位置に変換するだけ）。海は余白も含む正方形の全面に塗る。
+  ctx.fillStyle = '#123a52'; // 海（余白もこの色。上に未探索の霧が掛かる）
+  ctx.fillRect(x0, y0, MINI_SIZE, MINI_SIZE);
   ctx.fillStyle = '#3f6b45'; // 陸地
   ctx.beginPath();
   PREFECTURE_RING.forEach(([lon,lat], i)=>{
-    const [mx, my] = toMini(worldX(lon), worldY(lat));
+    const mx = x0 + miniX(worldX(lon)), my = y0 + miniY(worldY(lat));
     if(i===0) ctx.moveTo(mx, my); else ctx.lineTo(mx, my);
   });
   ctx.closePath();
   ctx.fill();
   ctx.strokeStyle = '#274a2b'; ctx.lineWidth = 1; ctx.stroke();
 
-  // 2) 探索済み／未探索の霧オーバーレイ（ミニマップ専用の探索済みマスク miniMaskCanvas を使用）
-  miniFogCtx.clearRect(0, 0, MINI_W, MINI_H);
+  // 2) 探索済み／未探索／余白の霧オーバーレイ（ミニマップ専用の探索済みマスク miniMaskCanvas を使用）。
+  //    霧は正方形の全面に掛け、探索済みの部分だけ消す。マスクは外接矩形の内側にしか書かれないので、余白は常に未探索と同じ霧のまま。
+  miniFogCtx.clearRect(0, 0, MINI_SIZE, MINI_SIZE);
   miniFogCtx.fillStyle = 'rgba(4,8,14,0.88)';
-  miniFogCtx.fillRect(0, 0, MINI_W, MINI_H);
+  miniFogCtx.fillRect(0, 0, MINI_SIZE, MINI_SIZE);
   miniFogCtx.globalCompositeOperation = 'destination-out';
   miniFogCtx.drawImage(miniMaskCanvas, 0, 0);
   miniFogCtx.globalCompositeOperation = 'source-over';
@@ -100,8 +120,8 @@ function drawMinimap(pWX, pWY){
   // 3) 🧭県庁サーチ発動中：県庁の印（ピンクの星）。霧オーバーレイの「上」に重ねる。
   //    座標は下のプレイヤー印と同じ変換（ワールド座標→ミニマップ）で、県庁のワールド座標から求める
   if(state.compassActive){
-    const cx = x0 + ((worldX(state.boss.lon) - worldMinX) / WORLD_W) * MINI_W;
-    const cy = y0 + ((worldY(state.boss.lat) - worldMinY) / WORLD_H) * MINI_H;
+    const cx = x0 + miniX(worldX(state.boss.lon));
+    const cy = y0 + miniY(worldY(state.boss.lat));
     ctx.beginPath();
     for(let i = 0; i < 10; i++){
       const rad = (i % 2 === 0) ? 6 : 2.6;
@@ -115,8 +135,8 @@ function drawMinimap(pWX, pWY){
   }
 
   // 4) プレイヤー位置マーカー
-  const px = x0 + ((pWX - worldMinX) / WORLD_W) * MINI_W;
-  const py = y0 + ((pWY - worldMinY) / WORLD_H) * MINI_H;
+  const px = x0 + miniX(pWX);
+  const py = y0 + miniY(pWY);
   ctx.fillStyle = '#ffd93d';
   ctx.beginPath(); ctx.arc(px, py, 3, 0, Math.PI*2); ctx.fill();
 

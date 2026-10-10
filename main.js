@@ -90,6 +90,9 @@ const CONFIG = {
     bike:  { scale: 1.3,  yOffset: 25 }, // カヤックと同様、乗り物の縦幅が大きい素材のため拡大＋下寄せ
   },
   FOG_REVEAL_RADIUS_BASE_PX: 190, // 霧の解除半径（ズーム未適用の基準値。ワールドピクセル単位）
+  // ---- ミニマップ（県の大きさ・縦横比によらない固定の正方形） ----
+  MINIMAP_SIZE: 92,             // ミニマップの一辺(px)。県の外接矩形を、縦横比を保ってこの正方形に収め、中央に置く
+  MINIMAP_REVEAL_MIN_PX: 3,     // ミニマップ上の探索の跡の最小半径(px)。大きな県で実際の縮尺の半径が小さくなりすぎても、跡が見えるようにする
   PLAYER_SIZE: 100,        // 探検家の表示高さ(px)
   CHEST_SIZE: 60,          // 宝箱（未開封）の表示高さ(px)。開封中はこの1.15倍を使用
   CAPITAL_SIZE: 100,       // 県庁の表示高さ(px)
@@ -131,12 +134,20 @@ function setupWorldCoordinates(){
   worldMinY = worldY(latMax+MARGIN_DEG); worldMaxY = worldY(latMin-MARGIN_DEG);
   WORLD_W = worldMaxX - worldMinX; WORLD_H = worldMaxY - worldMinY;
 
-  // 東京都以外の都道府県ポリゴン：フラット配列を [ [ [wx,wy], ... ], ... ] のワールド座標リングに変換（一度だけ）
-  OTHER_PREF_RINGS_WORLD = OTHER_PREF_RINGS_FLAT.map(flat=>{
+  // 背景の他県ポリゴン：遊んでいる県（loadPrefectureData() で読み込んだ県コード = loadedPrefCode）と
+  // 県コードが一致するリングをすべて除外してから、フラット配列を [ [ [wx,wy], ... ], ... ] のワールド座標リングに変換（一度だけ）。
+  // 除外した県の島などは背景では海扱いになる（離島は不要の方針）。県コードは画面には出さない。
+  const playedCode = (typeof loadedPrefCode === 'number') ? loadedPrefCode : null;
+  const codesOk = (typeof OTHER_PREF_RING_CODES !== 'undefined') && OTHER_PREF_RING_CODES.length === OTHER_PREF_RINGS_FLAT.length;
+  if(!codesOk) console.warn('[background] OTHER_PREF_RING_CODES がない、または OTHER_PREF_RINGS_FLAT と長さが違うため、遊んでいる県の輪郭を除外できません');
+  OTHER_PREF_RINGS_WORLD = [];
+  OTHER_PREF_RINGS_FLAT.forEach((flat, k)=>{
+    if(codesOk && playedCode !== null && OTHER_PREF_RING_CODES[k] === playedCode) return;
     const ring = [];
     for(let i=0;i<flat.length;i+=2){ ring.push([worldX(flat[i]), worldY(flat[i+1])]); }
-    return ring;
+    OTHER_PREF_RINGS_WORLD.push(ring);
   });
+  debugLog('[background] 他県リング', OTHER_PREF_RINGS_WORLD.length, '/', OTHER_PREF_RINGS_FLAT.length, '（遊んでいる県のリングを除外）');
 }
 
 // 東京都の土地利用を、起動時に一度だけオフスクリーンcanvasへラスター化しておく（毎フレームの193,000セル描画を避けるため）
@@ -578,7 +589,7 @@ function draw(){
   ctx.fillStyle = '#123a52';
   ctx.fillRect(0,0,W,H);
 
-  // 東京都以外の都道府県：地味な単色でベタ塗りするだけ（装飾なし）
+  // 遊んでいる県以外の都道府県：地味な単色でベタ塗りするだけ（装飾なし）
   ctx.save();
   ctx.fillStyle = '#3a453e';
   OTHER_PREF_RINGS_WORLD.forEach(ring=>{
