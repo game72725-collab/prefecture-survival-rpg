@@ -157,12 +157,12 @@ function pickNextQuestion(){
   if(!pool.length) pool = notAsked;                              // 2)
   if(!pool.length) pool = all.filter(q => q.id !== state.lastAskedId); // 3)
   if(!pool.length) pool = all; // 有効な問題が1問しかない場合のみ（同じ問題を出すしかない）
-  return pool[Math.floor(Math.random() * pool.length)];
+  return pool[Math.floor(gameRandom() * pool.length)];
 }
 // ✂️50-50：表示順の選択肢から「正解1つ＋不正解からランダムに1つ」だけ残した2択を返す（表示順は保つ）
 function applyFiftyFifty(shown, correctText){
   const wrong = shown.filter(o => o !== correctText);
-  const keepWrong = wrong[Math.floor(Math.random() * wrong.length)];
+  const keepWrong = wrong[Math.floor(gameRandom() * wrong.length)];
   return shown.filter(o => o === correctText || o === keepWrong);
 }
 

@@ -77,9 +77,27 @@ const CONFIG = {
   CHEST_ITEM_WEIGHTS: { time: 35, speed: 25, fifty: 25, compass: 15 }, // time=⏱+10秒 / speed=👟スピードアップ / fifty=✂️50-50 / compass=🧭県庁サーチ
   DEBUG_FORCE_ITEM: null,    // 'speed' / 'time' / 'fifty' / 'compass' のどれかにすると全宝箱がそのアイテムになる。null で通常（重み抽選）
   // ---- ヒント掲示板 ----
-  HINT_BOARD_COUNT: 4,       // ステージ開始時に置く掲示板の数。旧ヒント宝箱は「近距離2＋遠距離1〜2＝3〜4個」だったため最大の4に合わせた。有効な問題数がこれより少なければ問題数に合わせる
   HINT_BOARD_SIZE: 60,       // 掲示板の表示高さ(px)
-  HINT_BOARD_DIST_MIN_KM: 0.15, HINT_BOARD_DIST_MAX_KM: 3.0, // スポーン地点からの配置距離(km)。旧・近距離枠(0.15〜0.9)と遠距離枠(1.2〜3.0)を、区別なしの1範囲に統合
+  // ---- 難易度・スポーン・配置（県の大きさ R＝県庁から県境までの最大距離 に対する割合と、難易度で決める） ----
+  // 難易度は URL の ?diff=easy|normal|hard|veryhard が優先（大文字小文字は区別しない。不正な値は無視して下の値を使う）。選択画面は無い。
+  DIFFICULTY_DEFAULT: 'NORMAL',
+  DIFFICULTY: {
+    // spawnPct   : スポーンの距離（県庁から）を R に対する割合で [最小, 最大]。spawnMaxKm : 距離の上限(km)
+    // chestCount : 宝箱（アイテム）の数。timeSec : 制限時間(秒)
+    EASY:     { spawnPct: [0.10, 0.25], spawnMaxKm: 40,  chestCount: 14, timeSec: 120 },
+    NORMAL:   { spawnPct: [0.25, 0.45], spawnMaxKm: 70,  chestCount: 10, timeSec: 120 },
+    HARD:     { spawnPct: [0.45, 0.70], spawnMaxKm: 95,  chestCount: 6,  timeSec: 120 },
+    VERYHARD: { spawnPct: [0.70, 0.95], spawnMaxKm: 115, chestCount: 3,  timeSec: 120 },
+  },
+  SPAWN_MIN_KM: 5,           // スポーン距離の下限(km)
+  SPAWN_TRIES: 500,          // スポーン抽選の試行回数（範囲を広げる段階ごと）
+  HINT_BOARD_COUNT: 20,      // ヒント掲示板の数（県全体に配置。有効な問題がこれより少ない時は問題数まで）
+  // 宝箱・掲示板の散らし方。URL の ?scatter=prefecture|reachable が優先（大文字小文字は区別しない）
+  ITEM_SCATTER_MODE: 'prefecture', // 'prefecture'＝県全体（A）／'reachable'＝スポーンから届く範囲（B）
+  ITEM_REACH_FACTOR: 1.3,    // B の半径＝その難易度の spawnMaxKm × この値(km)
+  PLACE_MIN_SEP_KM: 0.8,     // 宝箱・掲示板どうしの最小間隔(km)。置けない時は 0.8倍ずつ（最大5回）緩める
+  PLACE_MIN_FROM_SPAWN_KM: 0.3, PLACE_MIN_FROM_CAPITAL_KM: 0.5, // スポーン・県庁からの最小距離(km)
+  PLACE_TRIES: 300,          // 1点あたりの試行回数（間隔を緩める段階ごと）
   HINT_PANEL_SEC: 8,         // ヒント表示パネルが自動で閉じるまでの秒数（タップでも閉じる）
   // シートごとの表示調整。scale＝PLAYER_SIZEに掛ける倍率、yOffset＝足元位置の下方向ずらし(px)。
   // 人物の大きさ・足元が歩き／走りとずれる素材はここで合わせる。
@@ -105,6 +123,41 @@ let cameraZoom = 1.0;
 if(new URLSearchParams(window.location.search).get('debug') === '1') CONFIG.DEBUG = true;
 // 開発確認用のログ。CONFIG.DEBUG が真の時だけ出す（通常は何も出さない）
 function debugLog(){ if(CONFIG.DEBUG) console.log.apply(console, arguments); }
+
+// ==== 乱数（ゲームの抽選はすべてここを通す。既定は Math.random。検証用に setGameRandom(シード付き関数) で差し替えられる） ====
+let gameRandom = () => Math.random();
+function setGameRandom(fn){ gameRandom = (typeof fn === 'function') ? fn : (() => Math.random()); }
+
+// ==== 難易度と配置モードの決定（優先順位：URLパラメータ → CONFIG。不正な値は無視して console.warn） ====
+//   ?diff=easy|normal|hard|veryhard、?scatter=prefecture|reachable（大文字小文字は区別しない）。画面には出さない。
+function resolveGameSettings(search){
+  const params = new URLSearchParams(search || '');
+  const diffs = CONFIG.DIFFICULTY;
+  let key = String(CONFIG.DIFFICULTY_DEFAULT).toUpperCase();
+  if(!diffs[key]){
+    const fallback = diffs.NORMAL ? 'NORMAL' : Object.keys(diffs)[0];
+    console.warn('[settings] CONFIG.DIFFICULTY_DEFAULT=' + CONFIG.DIFFICULTY_DEFAULT + ' は定義にありません。' + fallback + ' を使います');
+    key = fallback;
+  }
+  const pd = params.get('diff');
+  if(pd !== null){
+    if(diffs[pd.toUpperCase()]) key = pd.toUpperCase();
+    else console.warn('[settings] ?diff=' + pd + ' は無視します（easy / normal / hard / veryhard のどれか）。' + key + ' を使います');
+  }
+  const modes = ['prefecture', 'reachable'];
+  let mode = String(CONFIG.ITEM_SCATTER_MODE).toLowerCase();
+  if(!modes.includes(mode)){
+    console.warn('[settings] CONFIG.ITEM_SCATTER_MODE=' + CONFIG.ITEM_SCATTER_MODE + ' は不正です。prefecture を使います');
+    mode = 'prefecture';
+  }
+  const ps = params.get('scatter');
+  if(ps !== null){
+    if(modes.includes(ps.toLowerCase())) mode = ps.toLowerCase();
+    else console.warn('[settings] ?scatter=' + ps + ' は無視します（prefecture / reachable のどちらか）。' + mode + ' を使います');
+  }
+  return { difficultyKey: key, difficulty: diffs[key], scatterMode: mode };
+}
+let gameSettings = resolveGameSettings(window.location.search);
 
 // ==== 県ごとのワールド座標系 ====
 // 県データ（data/pref<コード>/data_mesh.js の PREFECTURE_RING 等）が読み込まれてから初めて決まる値なので、
@@ -307,12 +360,11 @@ const CHEST_OPEN_ANIM_MS = CHEST_OPEN_FRAME_MS * 9; // 9コマ分
 
 let state = {};
 
-function randRange(min, max){ return Math.random() * (max - min) + min; }
 // Fisher-Yatesシャッフル。元の配列は書き換えず、シャッフル済みの新しい配列を返す
 function shuffleArray(arr){
   const a = arr.slice();
   for(let i = a.length - 1; i > 0; i--){
-    const j = Math.floor(Math.random() * (i + 1));
+    const j = Math.floor(gameRandom() * (i + 1));
     const t = a[i]; a[i] = a[j]; a[j] = t;
   }
   return a;
@@ -339,13 +391,124 @@ function isInsidePrefecture(lat, lon){
   }
   return inside;
 }
-// 中心座標から距離distKm・角度angleRad(0=北,時計回り)だけ離れた緯度経度を返す
-function offsetLatLon(centerLat, centerLon, distKm, angleRad){
-  const dLatKm = distKm * Math.cos(angleRad);
-  const dLonKm = distKm * Math.sin(angleRad);
-  const lat = centerLat + dLatKm / KM_PER_DEG_LAT;
-  const lon = centerLon + dLonKm / kmPerDegLonAt(centerLat);
-  return clampToBounds(lat, lon);
+// ==== スポーン・宝箱・ヒント掲示板の配置 ====
+// 県の大きさ R（県庁から県境までの最大距離）に対する割合と、難易度で決める。距離（km）の換算は既存の KM_PER_DEG_LAT／kmPerDegLonAt。
+// 経度方向は2点の中間緯度で換算し、destLatLon（距離・方位→緯度経度）はその逆の式なので、作った点の実距離は指定どおりになる。
+// 抽選は clampToBounds を通さない（県外で端に丸められて距離が変わるため）。乱数はすべて gameRandom。
+function kmBetween(latA, lonA, latB, lonB){
+  const dy = (latB - latA) * KM_PER_DEG_LAT;
+  const dx = (lonB - lonA) * kmPerDegLonAt((latA + latB) / 2);
+  return Math.hypot(dx, dy);
+}
+// 中心(lat,lon)から、距離distKm・方位angleRad(0=北,時計回り)の緯度経度（クランプなし）
+function destLatLon(lat, lon, distKm, angleRad){
+  const nLat = lat + distKm * Math.cos(angleRad) / KM_PER_DEG_LAT;
+  const nLon = lon + distKm * Math.sin(angleRad) / kmPerDegLonAt((lat + nLat) / 2);
+  return { lat: nLat, lon: nLon };
+}
+// R：県庁（CAPITAL）から県境（PREFECTURE_RING の全頂点）までの最大距離(km)。initGame のたびに計算する
+function computePrefectureRadiusKm(){
+  let r = 0;
+  for(let i = 0; i < PREFECTURE_RING.length; i++){
+    const d = kmBetween(CAPITAL.lat, CAPITAL.lon, PREFECTURE_RING[i][1], PREFECTURE_RING[i][0]);
+    if(d > r) r = d;
+  }
+  return r;
+}
+// 置いてよい地形：データがあり、地形コードが1以上で、14（河川・湖沼）・15（海浜）・16（海水域）以外
+function isPlaceableTerrain(lat, lon){
+  const code = getLanduseCode(lat, lon);
+  if(code === null || code === undefined) return false;
+  const n = Number(code);
+  return n >= 1 && n !== 14 && n !== 15 && n !== 16;
+}
+// スポーンの採用条件：県内・置ける地形・周囲200mの8方向のうち6方向以上が県内で通行可能
+function isValidSpawnPoint(lat, lon){
+  if(!isInsidePrefecture(lat, lon) || !isPlaceableTerrain(lat, lon)) return false;
+  let ok = 0;
+  for(let k = 0; k < 8; k++){
+    const p = destLatLon(lat, lon, 0.2, k * Math.PI / 4);
+    if(isInsidePrefecture(p.lat, p.lon) && isPassable(p.lat, p.lon)) ok++;
+  }
+  return ok >= 6;
+}
+// スポーン：県庁から距離 d（[lo,hi] の一様乱数）・方位（一様乱数）の地点。
+//   lo = max(SPAWN_MIN_KM, min(pctLo×R, spawnMaxKm×0.6))、hi = max(lo+1, min(pctHi×R, spawnMaxKm))
+//   見つからなければ、範囲を段階的に広げて（lo×0.7、hi×1.15、最大4段階）再試行。それでも無ければ、範囲に最も近い候補（console.warnのみ）。
+function chooseSpawn(R, diff){
+  const lo0 = Math.max(CONFIG.SPAWN_MIN_KM, Math.min(diff.spawnPct[0] * R, diff.spawnMaxKm * 0.6));
+  const hi0 = Math.max(lo0 + 1, Math.min(diff.spawnPct[1] * R, diff.spawnMaxKm));
+  const make = (p, stage, relaxed) => ({ lat: p.lat, lon: p.lon, distKm: kmBetween(CAPITAL.lat, CAPITAL.lon, p.lat, p.lon),
+                                         R: R, lo: lo0, hi: hi0, stage: stage, relaxed: relaxed });
+  let best = null; // 条件を満たす候補が1つも無かった時の代用（県内・地形が良い・範囲からの外れが小さい順）
+  for(let stage = 0; stage <= 4; stage++){
+    const lo = lo0 * Math.pow(0.7, stage), hi = hi0 * Math.pow(1.15, stage);
+    for(let t = 0; t < CONFIG.SPAWN_TRIES; t++){
+      const d = lo + gameRandom() * (hi - lo);
+      const a = gameRandom() * Math.PI * 2;
+      const p = destLatLon(CAPITAL.lat, CAPITAL.lon, d, a);
+      if(isValidSpawnPoint(p.lat, p.lon)) return make(p, stage, false);
+      if(!isInsidePrefecture(p.lat, p.lon)) continue;
+      const tier = isPlaceableTerrain(p.lat, p.lon) ? 0 : 1;
+      const viol = d < lo0 ? lo0 - d : (d > hi0 ? d - hi0 : 0);
+      if(!best || tier < best.tier || (tier === best.tier && viol < best.viol)) best = { tier: tier, viol: viol, p: p };
+    }
+  }
+  console.warn('[spawn] 条件を満たす地点が見つからなかったため、範囲に最も近い候補を使います（R=' + R.toFixed(1) + 'km, 範囲=' + lo0.toFixed(1) + '〜' + hi0.toFixed(1) + 'km）');
+  return make(best ? best.p : { lat: CAPITAL.lat, lon: CAPITAL.lon }, 5, true);
+}
+// 掲示板（1問に1枚・重複なし）と宝箱をまとめて配置する（掲示板を先に置く）。
+//   モードA 'prefecture'：県の外接矩形から一様乱数で点を取り、条件を満たすものを採用（面積に比例して散る）
+//   モードB 'reachable' ：スポーン中心・半径 spawnMaxKm×ITEM_REACH_FACTOR の円から面積に比例して（r=半径×√u）点を取り、同じ条件で採用
+//   共通条件：県内／置ける地形／スポーン・県庁からの最小距離／既存の点との最小間隔。
+//   1点あたり PLACE_TRIES 回で見つからなければ、最小間隔を0.8倍にして再試行（最大5回）。それでも置けなければ置ける数で続行（console.warnのみ）。
+function placeBoardsAndChests(spawn, diff, mode, rollItem){
+  let lonMin_ = Infinity, lonMax_ = -Infinity, latMin_ = Infinity, latMax_ = -Infinity;
+  PREFECTURE_RING.forEach(([lon, lat])=>{
+    if(lon < lonMin_) lonMin_ = lon; if(lon > lonMax_) lonMax_ = lon;
+    if(lat < latMin_) latMin_ = lat; if(lat > latMax_) latMax_ = lat;
+  });
+  const reachKm = diff.spawnMaxKm * CONFIG.ITEM_REACH_FACTOR;
+  const sample = (mode === 'reachable')
+    ? () => { const r = reachKm * Math.sqrt(gameRandom()); const a = gameRandom() * Math.PI * 2; return destLatLon(spawn.lat, spawn.lon, r, a); }
+    : () => ({ lat: latMin_ + gameRandom() * (latMax_ - latMin_), lon: lonMin_ + gameRandom() * (lonMax_ - lonMin_) });
+  const placed = [];
+  const stats = { boardsWanted: 0, boardsPlaced: 0, chestsWanted: diff.chestCount, chestsPlaced: 0, relaxed: 0, failed: 0 };
+  function placeOne(){
+    for(let k = 0; k <= 5; k++){
+      const sep = CONFIG.PLACE_MIN_SEP_KM * Math.pow(0.8, k);
+      for(let t = 0; t < CONFIG.PLACE_TRIES; t++){
+        const p = sample();
+        if(!isInsidePrefecture(p.lat, p.lon) || !isPlaceableTerrain(p.lat, p.lon)) continue;
+        if(kmBetween(spawn.lat, spawn.lon, p.lat, p.lon) < CONFIG.PLACE_MIN_FROM_SPAWN_KM) continue;
+        if(kmBetween(CAPITAL.lat, CAPITAL.lon, p.lat, p.lon) < CONFIG.PLACE_MIN_FROM_CAPITAL_KM) continue;
+        let near = false;
+        for(let i = 0; i < placed.length; i++){ if(kmBetween(placed[i].lat, placed[i].lon, p.lat, p.lon) < sep){ near = true; break; } }
+        if(near) continue;
+        placed.push(p);
+        if(k > 0) stats.relaxed++;
+        return p;
+      }
+    }
+    stats.failed++;
+    return null;
+  }
+  const n = Math.min(CONFIG.HINT_BOARD_COUNT, currentKnowledge.length);
+  stats.boardsWanted = n;
+  const boards = [];
+  shuffleArray(currentKnowledge).slice(0, n).forEach(q=>{ // 1問に1枚、重複なし
+    const p = placeOne();
+    if(p) boards.push({ lat: p.lat, lon: p.lon, questionId: q.id, state: 'active' });
+  });
+  stats.boardsPlaced = boards.length;
+  const chests = [];
+  for(let i = 0; i < diff.chestCount; i++){
+    const p = placeOne();
+    if(p) chests.push({ lat: p.lat, lon: p.lon, item: rollItem(), state: 'closed', openStart: 0 });
+  }
+  stats.chestsPlaced = chests.length;
+  if(stats.failed > 0) console.warn('[place] 置けなかった点が ' + stats.failed + ' 個あります（掲示板 ' + boards.length + '/' + n + '、宝箱 ' + chests.length + '/' + diff.chestCount + '）');
+  return { boards: boards, chests: chests, stats: stats };
 }
 
 // 宝箱の中身：'time'（+10秒）／'speed'（スピードアップ）／'fifty'（✂️50-50）／'compass'（🧭県庁サーチ）。抽選は items.js の pickChestItem()。
@@ -353,22 +516,24 @@ function initGame(){
   resize();
   resetFogTiles(); // 探索状態を初期化（霧タイルをすべて破棄。前のランの探索は引き継がない）
 
-  // ① スポーン地点：県庁から直線距離1〜3km圏内のランダムな地点
-  const spawnDist = randRange(1, 3);
-  const spawnAngle = randRange(0, Math.PI*2);
-  const spawn = offsetLatLon(CAPITAL.lat, CAPITAL.lon, spawnDist, spawnAngle);
+  const diff = gameSettings.difficulty;
+
+  // ① スポーン地点：県の大きさ R に対する割合と難易度で決める（chooseSpawn）。R は起動のたびに計算する
+  const R = computePrefectureRadiusKm();
+  const spawn = chooseSpawn(R, diff);
 
   state = {
     player: { lat: spawn.lat, lon: spawn.lon },
     spawn: { lat: spawn.lat, lon: spawn.lon },
+    spawnInfo: spawn,      // R・使った距離範囲・実距離・フォールバックの段階（デバッグ・検証用。画面には出さない）
     chests: [],
     boss: { lat: CAPITAL.lat, lon: CAPITAL.lon, sizePx: BOSS_SIZE_PX },
-    timeLeft: 90,
+    timeLeft: diff.timeSec,
     speedBoostUntil: 0, // スピードアップの終了時刻(performance.now基準)。0＝非発動
     running: true,
     mode: 'playing',
     quizStep: 0,
-    hintBoards: [],        // ヒント掲示板（placeHintBoards）
+    hintBoards: [],        // ヒント掲示板
     readHintIds: new Set(), // 今回のランで掲示板から読んだ問題ID（ラン開始ごとにリセット）
     askedIds: new Set(),    // 今回のランでボス戦に出題済みの問題ID（ラン開始ごとにリセット）
     lastAskedId: null,      // 直前に出題した問題ID
@@ -376,6 +541,7 @@ function initGame(){
     fiftyFiftyStock: 0,     // ✂️50-50の所持数（ラン開始で0にリセット）
     compassActive: false    // 🧭県庁サーチが発動済みか（ラン開始で未発動にリセット）
   };
+  timerEl.textContent = state.timeLeft;
 
   // 宝箱の中身を抽選する。🧭は1つ割り当てたら、同じラン内の残りの宝箱の抽選から外す（2個目は意味がないため）
   let compassTaken = state.compassActive;
@@ -385,26 +551,18 @@ function initGame(){
     return it;
   };
 
-  // ⑤ 宝箱：スポーン地点からの距離で「近距離枠」「遠距離枠」を分けて配置
-  const NEAR_COUNT = 2;
-  const FAR_COUNT = Math.random() < 0.5 ? 1 : 2;
-  for(let i=0;i<NEAR_COUNT;i++){
-    const d = randRange(0.15, 0.9);
-    const a = randRange(0, Math.PI*2);
-    const p = offsetLatLon(spawn.lat, spawn.lon, d, a);
-    state.chests.push({ lat:p.lat, lon:p.lon, category:'near', item: rollChestItem(), state:'closed', openStart:0 });
-  }
-  for(let i=0;i<FAR_COUNT;i++){
-    const d = randRange(1.2, 3.0);
-    const a = randRange(0, Math.PI*2);
-    const p = offsetLatLon(spawn.lat, spawn.lon, d, a);
-    state.chests.push({ lat:p.lat, lon:p.lon, category:'far', item: rollChestItem(), state:'closed', openStart:0 });
-  }
+  // ② 掲示板（20個・1問1枚）と宝箱（難易度の個数）を、まとめて配置（掲示板が先）
+  const placed = placeBoardsAndChests(spawn, diff, gameSettings.scatterMode, rollChestItem);
+  state.hintBoards = placed.boards;
+  state.chests = placed.chests;
+  state.placeInfo = placed.stats;
   chestTotalEl.textContent = state.chests.length;
   chestCountEl.textContent = 0;
 
-  // ヒント掲示板：ナレッジ（有効な問題）から重複なしでN問を選び、1問につき1つ配置（items.js）
-  state.hintBoards = placeHintBoards(spawn);
+  debugLog('[init] 難易度=' + gameSettings.difficultyKey + ' モード=' + gameSettings.scatterMode + ' R=' + R.toFixed(1) + 'km スポーン範囲=' +
+           spawn.lo.toFixed(1) + '〜' + spawn.hi.toFixed(1) + 'km 実距離=' + spawn.distKm.toFixed(1) + 'km（段階' + spawn.stage + (spawn.relaxed ? '・代用' : '') +
+           '） 掲示板=' + placed.stats.boardsPlaced + '/' + placed.stats.boardsWanted + ' 宝箱=' + placed.stats.chestsPlaced + '/' + placed.stats.chestsWanted +
+           ' 間隔を緩めた点=' + placed.stats.relaxed);
 
   hideAllOverlays();
   resetHintUI(); // ヒントのパネル／一覧／ボタン表示を初期状態へ（ui.js）
@@ -830,7 +988,7 @@ function pickPrefectureCode(excluded){
     console.warn('[pref] CONFIG.FORCE_PREFECTURE_CODE=' + forced + ' は利用できません（一覧にない、または読み込みに失敗した県）。別の県を選びます');
   }
   // ③ ランダム
-  return candidates[Math.floor(Math.random() * candidates.length)];
+  return candidates[Math.floor(gameRandom() * candidates.length)];
 }
 
 // 県データが読めなかった時の表示（読み込み中の画面を使う。ゲームは開始しない）

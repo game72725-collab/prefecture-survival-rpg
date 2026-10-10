@@ -11,7 +11,7 @@ function pickChestItem(excludeCompass){
   const pool = Object.keys(CONFIG.CHEST_ITEM_WEIGHTS).filter(k => !(excludeCompass && k === 'compass'));
   let total = 0;
   pool.forEach(k => { total += CONFIG.CHEST_ITEM_WEIGHTS[k]; });
-  let r = Math.random() * total;
+  let r = gameRandom() * total;
   for(const k of pool){
     r -= CONFIG.CHEST_ITEM_WEIGHTS[k];
     if(r < 0) return k;
@@ -53,24 +53,10 @@ function grantFiftyFifty(){ state.fiftyFiftyStock++; }
 function activateCompass(){ state.compassActive = true; }
 
 // ==== ヒント掲示板 ====
-// ステージ開始時に、有効な問題から重複なしでN問をランダムに選び、1問につき1つ置く。
+// ヒント掲示板：ステージ開始時に、有効な問題から重複なしで（最大 CONFIG.HINT_BOARD_COUNT）問を選び、1問につき1つ置く。
+// 配置（県全体／スポーンから届く範囲）は main.js の placeBoardsAndChests()。ここは取得判定と描画だけ。
 // 触れたらその問題の hint を表示（パネルは ui.js の openHintPanel）し、掲示板は消える。
 const IMG_HINT_BOARD = loadImg('assets/board.png'); // 素材が無い間は drawHintBoards() のフォールバック図形で表示
-function placeHintBoards(spawn){
-  const n = Math.min(CONFIG.HINT_BOARD_COUNT, currentKnowledge.length);
-  const picked = shuffleArray(currentKnowledge).slice(0, n); // 重複なし
-  return picked.map(q=>{
-    // スポーン地点から一定距離のランダムな地点（宝箱と同じ offsetLatLon）。海・海浜は避け、県境の内側だけにする
-    let p = null;
-    for(let tries = 0; tries < 40; tries++){
-      const d = randRange(CONFIG.HINT_BOARD_DIST_MIN_KM, CONFIG.HINT_BOARD_DIST_MAX_KM);
-      const a = randRange(0, Math.PI*2);
-      p = offsetLatLon(spawn.lat, spawn.lon, d, a);
-      if(isPassable(p.lat, p.lon) && isInsidePrefecture(p.lat, p.lon)) break;
-    }
-    return { lat: p.lat, lon: p.lon, questionId: q.id, state: 'active' };
-  });
-}
 function checkHintBoardPickup(pWX, pWY){
   state.hintBoards.forEach(b=>{
     if(b.state !== 'active') return;
