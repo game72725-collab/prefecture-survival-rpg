@@ -74,7 +74,7 @@ const CONFIG = {
   ANIM_FRAME_MS_KAYAK: 90,   // カヤックのコマ送り間隔
   BIKE_DURATION_SEC: 10,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
   // 宝箱の中身の抽選の重み（合計に対する割合で出る）。🧭県庁サーチは、発動済み／同じラン内で既に1つ割り当て済みなら抽選から外れる（items.js の pickChestItem）
-  CHEST_ITEM_WEIGHTS: { time: 35, speed: 25, fifty: 25, compass: 15 }, // time=⏱+10秒 / speed=👟スピードアップ / fifty=✂️50-50 / compass=🧭県庁サーチ
+  CHEST_ITEM_WEIGHTS: { time: 35, speed: 25, fifty: 25, compass: 15 }, // time=⏱+秒（県の規模でスケール） / speed=👟スピードアップ / fifty=✂️50-50 / compass=🧭県庁サーチ
   DEBUG_FORCE_ITEM: null,    // 'speed' / 'time' / 'fifty' / 'compass' のどれかにすると全宝箱がそのアイテムになる。null で通常（重み抽選）
   // ---- ヒント掲示板 ----
   HINT_BOARD_SIZE: 60,       // 掲示板の表示高さ(px)
@@ -82,13 +82,28 @@ const CONFIG = {
   // 難易度は URL の ?diff=easy|normal|hard|veryhard が優先（大文字小文字は区別しない。不正な値は無視して下の値を使う）。選択画面は無い。
   DIFFICULTY_DEFAULT: 'NORMAL',
   DIFFICULTY: {
-    // spawnPct   : スポーンの距離（県庁から）を R に対する割合で [最小, 最大]。spawnMaxKm : 距離の上限(km)
-    // chestCount : 宝箱（アイテム）の数。timeSec : 制限時間(秒)
-    EASY:     { spawnPct: [0.10, 0.25], spawnMaxKm: 40,  chestCount: 14, timeSec: 120 },
-    NORMAL:   { spawnPct: [0.25, 0.45], spawnMaxKm: 70,  chestCount: 10, timeSec: 120 },
-    HARD:     { spawnPct: [0.45, 0.70], spawnMaxKm: 95,  chestCount: 6,  timeSec: 120 },
-    VERYHARD: { spawnPct: [0.70, 0.95], spawnMaxKm: 115, chestCount: 3,  timeSec: 120 },
+    // spawnPct      : スポーンの距離（県庁から）を R に対する割合で [最小, 最大]
+    // spawnMaxKm    : スポーン距離の上限(km)。宝箱数・アイテム効果の「県の規模」の基準にもなる（下の KM_PER_CHEST・ITEM_REF_KM）
+    // chestCountMul : 宝箱数の難易度別の倍率（宝箱数 = round(spawnMaxKm / KM_PER_CHEST) × この倍率 × ランダム幅。computeChestCount）
+    // chestCount    : 【旧・現在は使わない】固定の宝箱数。互換と参考のために残してある（宝箱数は上の式で決まる）
+    // timeSec       : 【廃止】制限時間は全難易度・全県共通の CONFIG.TIME_LIMIT_SEC（ここには持たない）
+    EASY:     { spawnPct: [0.10, 0.25], spawnMaxKm: 40,  chestCountMul: 2.30, chestCount: 14 }, // 2.30：基準数6×2.30≒13.8＝旧 chestCount(14) に近づけた
+    NORMAL:   { spawnPct: [0.25, 0.45], spawnMaxKm: 70,  chestCountMul: 1.00, chestCount: 10 }, // 1.00：基準数10×1.00＝旧 chestCount(10)
+    HARD:     { spawnPct: [0.45, 0.70], spawnMaxKm: 95,  chestCountMul: 0.43, chestCount: 6  }, // 0.43：基準数14×0.43≒6.0＝旧 chestCount(6)
+    VERYHARD: { spawnPct: [0.70, 0.95], spawnMaxKm: 115, chestCountMul: 0.19, chestCount: 3  }, // 0.19：基準数16×0.19≒3.0＝旧 chestCount(3)
   },
+  TIME_LIMIT_SEC: 300,       // 制限時間(秒)。全難易度・全県共通（ここ1か所を変えれば全体が変わる）。根拠：県の規模が広い（スポーン最大115km）ので、旧120秒では届かないため、約2.5倍に
+  // ---- 宝箱数（難易度の spawnMaxKm に比例。computeChestCount） ----
+  KM_PER_CHEST: 7,           // 宝箱1個あたりの km。基準数＝round(spawnMaxKm÷7)。根拠：NORMAL(70km)で基準数10＝旧 NORMAL の宝箱数(10)に合わせた
+  CHEST_RANDOM_RANGE: 0.25,  // 宝箱数のランダム幅（±25%。gameRandom で一様）。根拠：ランごとに数が少し変わる程度（指定値）
+  CHEST_MIN: 2,              // 宝箱数の下限。根拠：最少の VERYHARD(約3個)が−25%（約2個）でも、0〜1個にならない最小限
+  CHEST_MAX: 20,             // 宝箱数の上限。根拠：最多の EASY(約14個)の+25%（約17個）に余裕を持たせ、置ききれないほど増えないようにする
+  // ---- 時間アイテム・スピードアイテムの県の規模スケール ----
+  // scale = clamp(spawnMaxKm ÷ ITEM_REF_KM, 1, ITEM_SCALE_MAX)。時間アイテム＝TIME_ITEM_BASE_SEC×scale 秒（整数）、スピード＝効果時間のみ BIKE_DURATION_SEC×scale 秒（倍率 SPEED_BIKE_MULT は据え置き）
+  ITEM_REF_KM: 40,           // scale=1 になる spawnMaxKm。根拠：最も狭い EASY(40km)で従来どおり（+10秒・10秒）
+  ITEM_SCALE_MAX: 3,         // scale の上限。根拠：VERYHARD(115÷40≒2.9)はほぼそのまま通し、将来 spawnMaxKm を大きくしても極端に伸びないようにする
+  TIME_ITEM_BASE_SEC: 10,    // 時間アイテムの基本秒数（scale=1 のとき）。根拠：従来の「残り時間 +10秒」
+
   SPAWN_MIN_KM: 5,           // スポーン距離の下限(km)
   SPAWN_TRIES: 500,          // スポーン抽選の試行回数（範囲を広げる段階ごと）
   HINT_BOARD_COUNT: 20,      // ヒント掲示板の数（県全体に配置。有効な問題がこれより少ない時は問題数まで）
@@ -514,6 +529,25 @@ function chooseSpawn(R, diff){
   console.warn('[spawn] 条件を満たす地点が見つからなかったため、範囲に最も近い候補を使います（R=' + R.toFixed(1) + 'km, 範囲=' + lo0.toFixed(1) + '〜' + hi0.toFixed(1) + 'km）');
   return make(best ? best.p : { lat: CAPITAL.lat, lon: CAPITAL.lon }, 5, true);
 }
+// ---- 宝箱数・アイテム効果の「県の規模」スケール（すべて CONFIG の定数。spawnMaxKm＝難易度の規模） ----
+// 宝箱数の基準値・範囲（デバッグ表 ?debug=params でも使う）。基準値＝round(spawnMaxKm÷KM_PER_CHEST)、公称値＝基準値×chestCountMul、範囲＝公称値×(1±CHEST_RANDOM_RANGE)を四捨五入して CHEST_MIN〜CHEST_MAX に収める
+function chestCountRange(diff){
+  const base = Math.round(diff.spawnMaxKm / CONFIG.KM_PER_CHEST);
+  const nominal = base * diff.chestCountMul;
+  const clampN = v => Math.max(CONFIG.CHEST_MIN, Math.min(CONFIG.CHEST_MAX, Math.round(v)));
+  return { base: base, nominal: nominal, min: clampN(nominal * (1 - CONFIG.CHEST_RANDOM_RANGE)), max: clampN(nominal * (1 + CONFIG.CHEST_RANDOM_RANGE)) };
+}
+// そのランの宝箱数：公称値に gameRandom で ±CHEST_RANDOM_RANGE の幅を持たせ、四捨五入して CHEST_MIN〜CHEST_MAX に収める
+function computeChestCount(diff){
+  const r = chestCountRange(diff);
+  const v = r.nominal * (1 + (gameRandom() * 2 - 1) * CONFIG.CHEST_RANDOM_RANGE);
+  return Math.max(CONFIG.CHEST_MIN, Math.min(CONFIG.CHEST_MAX, Math.round(v)));
+}
+// アイテム効果のスケール：clamp(spawnMaxKm ÷ ITEM_REF_KM, 1, ITEM_SCALE_MAX)
+function itemScaleFor(diff){ return Math.max(1, Math.min(CONFIG.ITEM_SCALE_MAX, diff.spawnMaxKm / CONFIG.ITEM_REF_KM)); }
+function timeItemSecFor(scale){ return Math.round(CONFIG.TIME_ITEM_BASE_SEC * scale); }          // 時間アイテムの秒数（整数）
+function speedBoostSecFor(scale){ return CONFIG.BIKE_DURATION_SEC * scale; }                      // スピードアイテムの効果時間（秒）。倍率 SPEED_BIKE_MULT はスケールしない
+
 // 掲示板（1問に1枚・重複なし）と宝箱をまとめて配置する（掲示板を先に置く）。
 //   モードA 'prefecture'：県の外接矩形から一様乱数で点を取り、条件を満たすものを採用（面積に比例して散る）
 //   モードB 'reachable' ：スポーン中心・半径 spawnMaxKm×ITEM_REACH_FACTOR の円から面積に比例して（r=半径×√u）点を取り、同じ条件で採用
@@ -530,7 +564,7 @@ function placeBoardsAndChests(spawn, diff, mode, rollItem){
     ? () => { const r = reachKm * Math.sqrt(gameRandom()); const a = gameRandom() * Math.PI * 2; return destLatLon(spawn.lat, spawn.lon, r, a); }
     : () => ({ lat: latMin_ + gameRandom() * (latMax_ - latMin_), lon: lonMin_ + gameRandom() * (lonMax_ - lonMin_) });
   const placed = [];
-  const stats = { boardsWanted: 0, boardsPlaced: 0, chestsWanted: diff.chestCount, chestsPlaced: 0, relaxed: 0, failed: 0 };
+  const stats = { boardsWanted: 0, boardsPlaced: 0, chestsWanted: 0, chestsPlaced: 0, relaxed: 0, failed: 0 };
   function placeOne(){
     for(let k = 0; k <= 5; k++){
       const sep = CONFIG.PLACE_MIN_SEP_KM * Math.pow(0.8, k);
@@ -558,13 +592,15 @@ function placeBoardsAndChests(spawn, diff, mode, rollItem){
     if(p) boards.push({ lat: p.lat, lon: p.lon, questionId: q.id, state: 'active' });
   });
   stats.boardsPlaced = boards.length;
+  const chestN = computeChestCount(diff); // 掲示板を置いた後に決める（掲示板の配置の乱数列を変えない）
+  stats.chestsWanted = chestN;
   const chests = [];
-  for(let i = 0; i < diff.chestCount; i++){
+  for(let i = 0; i < chestN; i++){
     const p = placeOne();
     if(p) chests.push({ lat: p.lat, lon: p.lon, item: rollItem(), state: 'closed', openStart: 0 });
   }
   stats.chestsPlaced = chests.length;
-  if(stats.failed > 0) console.warn('[place] 置けなかった点が ' + stats.failed + ' 個あります（掲示板 ' + boards.length + '/' + n + '、宝箱 ' + chests.length + '/' + diff.chestCount + '）');
+  if(stats.failed > 0) console.warn('[place] 置けなかった点が ' + stats.failed + ' 個あります（掲示板 ' + boards.length + '/' + n + '、宝箱 ' + chests.length + '/' + chestN + '）');
   return { boards: boards, chests: chests, stats: stats };
 }
 
@@ -585,7 +621,8 @@ function initGame(){
     spawnInfo: spawn,      // R・使った距離範囲・実距離・フォールバックの段階（デバッグ・検証用。画面には出さない）
     chests: [],
     boss: { lat: CAPITAL.lat, lon: CAPITAL.lon, sizePx: BOSS_SIZE_PX },
-    timeLeft: diff.timeSec,
+    timeLeft: CONFIG.TIME_LIMIT_SEC, // 全難易度・全県共通
+    itemScale: itemScaleFor(diff),   // 時間・スピードアイテムの県の規模スケール（items.js）
     speedBoostUntil: 0, // スピードアップの終了時刻(performance.now基準)。0＝非発動
     running: true,
     mode: 'playing',
@@ -1127,3 +1164,16 @@ function startFirstRun(){
     requestAnimationFrame(loop);
   });
 }
+
+// ==== デバッグ：?debug=params で、現在読み込める全県 × 4難易度の「宝箱数・アイテム効果」の表を console.table で出す（通常起動では何も出さない） ====
+function printParamsTable(){
+  const codes = (typeof AVAILABLE_PREFECTURE_CODES !== 'undefined') ? AVAILABLE_PREFECTURE_CODES : [];
+  const rows = [];
+  codes.forEach(code => Object.keys(CONFIG.DIFFICULTY).forEach(key => {
+    const d = CONFIG.DIFFICULTY[key], r = chestCountRange(d), sc = itemScaleFor(d);
+    rows.push({ '県コード': code, '難易度': key, 'spawnMaxKm': d.spawnMaxKm, '宝箱数の基準値': r.base, '宝箱数の範囲(min-max)': r.min + '-' + r.max,
+                '時間アイテム秒数': timeItemSecFor(sc), 'スピード効果時間(秒)': Math.round(speedBoostSecFor(sc) * 10) / 10 });
+  }));
+  console.table(rows);
+}
+if(new URLSearchParams(window.location.search).get('debug') === 'params') printParamsTable();

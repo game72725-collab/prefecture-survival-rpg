@@ -30,12 +30,15 @@ function applyChestItem(item){
     activateCompass();
     showItemMessage('🧭 県庁サーチ発動！ミニマップに県庁の位置が出ます');
   } else { // 'time'
-    state.timeLeft += 10;
-    showItemMessage('⏱ 残り時間 +10秒');
+    const sec = timeItemSecFor(state.itemScale); // 10秒×県の規模スケール（整数）
+    state.timeLeft += sec;
+    showItemMessage('⏱ 残り時間 +' + sec + '秒');
   }
 }
 function activateSpeedBoost(){
-  state.speedBoostUntil = performance.now() + CONFIG.BIKE_DURATION_SEC * 1000;
+  // 効果時間のみ県の規模スケール倍（倍率 SPEED_BIKE_MULT は据え置き）。ui.js の残量バーが使うので、今回の効果時間も持つ
+  state.speedBoostDurationMs = speedBoostSecFor(state.itemScale) * 1000;
+  state.speedBoostUntil = performance.now() + state.speedBoostDurationMs;
 }
 // 宝箱を取った時のアイテム入手メッセージ（宝箱はアイテム専用。ヒントは出さない）
 let itemMsgTimer = null;

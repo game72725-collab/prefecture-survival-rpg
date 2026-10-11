@@ -22,7 +22,7 @@ function updateBoostHud(now){
   const remainMs = state.speedBoostUntil - now;
   if(remainMs > 0){
     boostHud.classList.add('show');
-    boostBar.style.width = Math.min(100, remainMs / (CONFIG.BIKE_DURATION_SEC*1000) * 100) + '%';
+    boostBar.style.width = Math.min(100, remainMs / (state.speedBoostDurationMs || CONFIG.BIKE_DURATION_SEC*1000) * 100) + '%';
     boostSec.textContent = Math.ceil(remainMs/1000) + 's';
   } else {
     boostHud.classList.remove('show');
