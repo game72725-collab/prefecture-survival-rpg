@@ -305,6 +305,84 @@ function updateHintButtonVisibility(){
   if(!visible){ closeHintPanel(); closeHintList(); }
 }
 
+// ==== 難易度の選択画面（起動時と再プレイ時） ====
+// 起動：県データの読み込みが終わるまでは「読み込み中…」を出してボタンを押せなくし、読み込み成功後（main.js の initPrefectureGame）に
+//       showDifficultySelect() で押せるようにする。読み込み失敗時は main.js の showStartError() が、選択画面を閉じてエラーだけを表示する。
+// 再プレイ：ゲームオーバー／クリアの「もう一度プレイ」→ main.js の resetGame() → 同じ県のまま、この画面に戻る。
+// 出さない設定：URL に ?diff= がある／CONFIG.SHOW_DIFFICULTY_SELECT=false（main.js の difficultySelectEnabled=false）。
+// 県名・県コード・フォルダ名・距離（km）は、この画面を含め、画面に出さない。
+const difficultyOverlay = document.getElementById('difficultyOverlay');
+const diffButtonsEl = document.getElementById('diffButtons');
+const diffStatusEl = document.getElementById('diffStatus');
+let diffPending = null;    // 選ばれた後に呼ぶ関数（最初のラン開始／再プレイ）
+let diffChoosing = false;  // 二重タップの防止
+
+// 前回選んだ難易度（localStorage。使えない・壊れた値でも動く）
+function loadLastDifficulty(){
+  try{
+    const v = window.localStorage.getItem(CONFIG.DIFFICULTY_STORAGE_KEY);
+    const k = v ? String(v).toUpperCase() : '';
+    return CONFIG.DIFFICULTY[k] ? k : null;
+  }catch(e){ return null; }
+}
+function saveLastDifficulty(key){
+  try{ window.localStorage.setItem(CONFIG.DIFFICULTY_STORAGE_KEY, key); }catch(e){ /* 保存できなくても続行 */ }
+}
+function buildDifficultyButtons(){
+  diffButtonsEl.innerHTML = '';
+  const order = ['EASY', 'NORMAL', 'HARD', 'VERYHARD'].filter(k => CONFIG.DIFFICULTY[k]);
+  Object.keys(CONFIG.DIFFICULTY).forEach(k => { if(!order.includes(k)) order.push(k); });
+  order.forEach(key=>{
+    const item = document.createElement('div'); item.className = 'diffItem';
+    const btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'diffBtn diff-' + key; btn.dataset.diff = key; btn.textContent = key; btn.disabled = true;
+    btn.addEventListener('click', ()=> chooseDifficulty(key));
+    const desc = document.createElement('div'); desc.className = 'diffDesc';
+    desc.textContent = (CONFIG.DIFFICULTY_UI && CONFIG.DIFFICULTY_UI[key]) || '';
+    item.appendChild(btn); item.appendChild(desc); diffButtonsEl.appendChild(item);
+  });
+}
+// 読み込み中（true）：「読み込み中…」を出してボタンを押せなくする／選べる状態（false）
+function setDifficultyLoading(loading){
+  diffStatusEl.textContent = loading ? '読み込み中…' : '難易度を選んでください';
+  diffButtonsEl.querySelectorAll('.diffBtn').forEach(b => { b.disabled = loading; });
+}
+// 前回選んだボタンを目立たせる（無ければ、どれも目立たせない）
+function highlightLastDifficulty(){
+  const last = loadLastDifficulty();
+  diffButtonsEl.querySelectorAll('.diffBtn').forEach(b=>{
+    const isLast = (b.dataset.diff === last);
+    b.classList.toggle('last', isLast);
+    const tag = b.querySelector('.diffLast');
+    if(isLast && !tag){ const t = document.createElement('span'); t.className = 'diffLast'; t.textContent = '前回'; b.appendChild(t); }
+    if(!isLast && tag) tag.remove();
+  });
+}
+// 選択画面を出す。onChosen は、難易度（gameSettings）を更新した後に呼ばれる
+function showDifficultySelect(onChosen){
+  diffPending = onChosen; diffChoosing = false;
+  gameOverOverlay.classList.remove('show'); clearOverlay.classList.remove('show'); // 再プレイ時は、終了画面の代わりにこの画面を出す
+  highlightLastDifficulty();
+  setDifficultyLoading(false);
+  difficultyOverlay.classList.add('show');
+}
+function chooseDifficulty(key){
+  if(diffChoosing || !diffPending || !CONFIG.DIFFICULTY[key]) return;
+  diffChoosing = true;
+  saveLastDifficulty(key);
+  gameSettings = { difficultyKey: key, difficulty: CONFIG.DIFFICULTY[key], scatterMode: gameSettings.scatterMode }; // 配置モードは変えない
+  difficultyOverlay.classList.remove('show');
+  const cb = diffPending; diffPending = null;
+  cb();
+}
+buildDifficultyButtons();
+if(difficultySelectEnabled){
+  // 起動直後は、読み込み中の状態で選択画面を出す（ボタンは押せない）。読み込み中の別の画面は、選ばれた後に出す
+  const lo = document.getElementById('loadingOverlay'); if(lo) lo.classList.remove('show');
+  setDifficultyLoading(true);
+  difficultyOverlay.classList.add('show');
+}
+
 // ---- ゲーム開始 ----
 // 以前はこのファイルの末尾で initGame() と requestAnimationFrame(loop) を直接呼んでいたが、
 // 県データを動的に読み込むようにしたため、開始処理は main.js の startGame() に移した

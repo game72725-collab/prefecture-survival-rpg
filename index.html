@@ -110,6 +110,27 @@
     background: #5ecb63; color:#0f1620; border:none;
     padding: 14px 26px; font-size: 17px; font-weight:bold; border-radius: 10px; margin-top: 10px;
   }
+  /* 難易度の選択画面（アプリ全体を覆う。HUD・クイズ画面と同じ暗めのサバイバル調。外部フォント・外部画像は使わない） */
+  #difficultyOverlay {
+    z-index: 30; overflow-y: auto; touch-action: pan-y; justify-content: flex-start;
+    background: radial-gradient(ellipse at 50% 12%, #1d2b3c 0%, #0d131b 62%, #080c11 100%);
+  }
+  #diffBox { margin: auto; width: 100%; max-width: 360px; }
+  #difficultyOverlay h1 { font-size: 21px; letter-spacing: 1px; margin: 0 0 6px; color:#e8ecf1; text-shadow: 0 2px 0 #000; }
+  #diffTitleLine { height: 3px; width: 64px; margin: 8px auto 14px; background: #ff5a5a; border-radius: 2px; }
+  #diffStatus { margin: 0 0 14px; min-height: 20px; font-size: 14px; opacity: 0.8; }
+  .diffItem { margin-bottom: 12px; }
+  .diffBtn {
+    position: relative; display:block; width:100%; min-height: 60px; padding: 10px 14px;
+    background: #1b2531; color:#fff; border: 2px solid var(--dc); border-left-width: 8px; border-radius: 10px;
+    font-size: 20px; font-weight: bold; letter-spacing: 2px; text-align: center;
+  }
+  .diffBtn:active { background: #2a3849; }
+  .diffBtn:disabled { opacity: 0.4; }
+  .diffBtn.last { background: #2b3a4d; box-shadow: 0 0 0 2px var(--dc), 0 0 14px var(--dc); }
+  .diffBtn .diffLast { position:absolute; right:10px; top:6px; font-size:11px; letter-spacing:0; padding:1px 7px; border-radius:8px; background: var(--dc); color:#0f1620; }
+  .diffDesc { margin-top: 4px; font-size: 12.5px; opacity: 0.78; }
+  .diff-EASY { --dc:#5ecb63; } .diff-NORMAL { --dc:#ffd93d; } .diff-HARD { --dc:#ff9f43; } .diff-VERYHARD { --dc:#ff5a5a; }
   #quizBox { width:100%; max-width: 380px; }
   #quizBox h2 { font-size: 19px; margin-bottom: 18px; }
   .quizOption {
@@ -128,7 +149,7 @@
 <div id="app">
 
   <div id="hud">
-    <div>⏱ <span id="timer">999</span>秒</div>
+    <div>⏱ <span id="timer">120</span>秒</div>
     <button id="hintListBtn" type="button">💡 ヒント(0)</button>
     <div>📦 <span id="chestCount">0</span>/<span id="chestTotal">4</span></div>
   </div>
@@ -181,6 +202,16 @@
       <div class="dbtn" id="left">◀</div>
       <div class="dbtn" id="right">▶</div>
       <div class="dbtn" id="down">▼</div>
+    </div>
+  </div>
+
+  <!-- 難易度の選択画面（起動時と再プレイ時。アプリ全体を覆う）。ボタンは ui.js が CONFIG.DIFFICULTY から作る。県名・県コード・距離は出さない -->
+  <div id="difficultyOverlay" class="overlay">
+    <div id="diffBox">
+      <h1>都道府県サバイバルRPG（仮）</h1>
+      <div id="diffTitleLine"></div>
+      <p id="diffStatus">読み込み中…</p>
+      <div id="diffButtons"></div>
     </div>
   </div>
 

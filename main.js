@@ -98,6 +98,25 @@ const CONFIG = {
   PLACE_MIN_SEP_KM: 0.8,     // 宝箱・掲示板どうしの最小間隔(km)。置けない時は 0.8倍ずつ（最大5回）緩める
   PLACE_MIN_FROM_SPAWN_KM: 0.3, PLACE_MIN_FROM_CAPITAL_KM: 0.5, // スポーン・県庁からの最小距離(km)
   PLACE_TRIES: 300,          // 1点あたりの試行回数（間隔を緩める段階ごと）
+  // ---- 難易度の選択画面 ----
+  SHOW_DIFFICULTY_SELECT: true, // false なら、起動時・再プレイ時の選択画面を出さず、?diff= または DIFFICULTY_DEFAULT で開始する（URL に ?diff= がある時も出さない）
+  DIFFICULTY_STORAGE_KEY: 'prefSurvival.lastDifficulty', // 前回選んだ難易度の保存先（localStorage。使えなくても動く）
+  DIFFICULTY_UI: {           // 選択画面のひと言（数値は出さない）
+    EASY:     '県庁が近い・宝箱が多い',
+    NORMAL:   'ふつう',
+    HARD:     '県庁が遠い・宝箱が少ない',
+    VERYHARD: '県庁がかなり遠い・宝箱がごくわずか',
+  },
+  // ---- 宝箱・掲示板の目印（上方に浮かぶ▼／◆。中身では変えない。霧の下では見えない） ----
+  SHOW_ITEM_MARKERS: true,   // false で目印を表示しない
+  MARKER_SIZE_PX: 20,        // 目印の大きさ（画面px。ズームで変えない）
+  MARKER_GAP_PX: 6,          // スプライトの上端から、目印の先端までの距離（画面px）
+  MARKER_BOB_PX: 3,          // 上下の揺れの振幅（画面px）
+  MARKER_BOB_PERIOD_MS: 1200, // 揺れの周期（ミリ秒。実時間 performance.now で決めるので、60Hzでも120Hzでも同じ速さ）
+  MARKER_CHEST_COLOR: '#FFC400', // 宝箱：下向き三角▼
+  MARKER_BOARD_COLOR: '#FF2D95', // 掲示板：ひし形◆（形が違うので、色が無くても区別できる）
+  MARKER_OUTLINE_WHITE_PX: 2, MARKER_OUTLINE_BLACK_PX: 1, // 縁取り：白(内側)の外側に黒
+  MARKER_CULL_MARGIN_PX: 40, // 画面の外側にこの余白を足した範囲の外は描かない
   HINT_PANEL_SEC: 8,         // ヒント表示パネルが自動で閉じるまでの秒数（タップでも閉じる）
   // シートごとの表示調整。scale＝PLAYER_SIZEに掛ける倍率、yOffset＝足元位置の下方向ずらし(px)。
   // 人物の大きさ・足元が歩き／走りとずれる素材はここで合わせる。
@@ -158,6 +177,12 @@ function resolveGameSettings(search){
   return { difficultyKey: key, difficulty: diffs[key], scatterMode: mode };
 }
 let gameSettings = resolveGameSettings(window.location.search);
+// 難易度の選択画面を出すか：CONFIG.SHOW_DIFFICULTY_SELECT が false、または URL に ?diff= がある時（値が不正でも）は出さない
+function needsDifficultySelect(search){
+  if(CONFIG.SHOW_DIFFICULTY_SELECT === false) return false;
+  return !new URLSearchParams(search || '').has('diff');
+}
+let difficultySelectEnabled = needsDifficultySelect(window.location.search);
 
 // ==== 県ごとのワールド座標系 ====
 // 県データ（data/pref<コード>/data_mesh.js の PREFECTURE_RING 等）が読み込まれてから初めて決まる値なので、
@@ -255,6 +280,36 @@ function fogKey(tx, ty){ return (ty + 512) * 4096 + (tx + 512); }
 
 // 霧タイルをすべて破棄する（width/height=0 で解放）。ラン開始（initGame）・再プレイ・県データの読み込み直し（initTerrain）で呼ぶ。
 // 探索状態は引き継がれない。ミニマップの霧も同時にクリアする。
+// ---- 探索済みの記録（宝箱・掲示板の目印の表示用。霧タイルの描画とは独立） ----
+// 目印（items.js の drawItemMarkers）は「霧が完全に晴れている場所」でだけ描く。霧の合成の前に描くだけだと、不透明度93%の霧の下でも
+// 7%ぶん透けて、未探索の場所に宝箱・掲示板があることがうっすら分かってしまうため。ワールドを EXPLORED_CELL_PX ごとの格子にして、
+// revealFogAt で霧を完全に晴らした範囲（解除半径の75%＝グラデーションの手前。セルの大きさぶん内側）に入ったセルを記録する。
+const EXPLORED_CELL_PX = 32;
+let exploredGrid = null, exploredCols = 0, exploredRows = 0;
+function resetExploredGrid(){
+  const cols = Math.ceil(WORLD_W / EXPLORED_CELL_PX) + 1, rows = Math.ceil(WORLD_H / EXPLORED_CELL_PX) + 1;
+  if(!exploredGrid || cols !== exploredCols || rows !== exploredRows){ exploredCols = cols; exploredRows = rows; exploredGrid = new Uint8Array(cols * rows); }
+  else exploredGrid.fill(0);
+}
+function markExploredAt(wx, wy, radiusPx){
+  if(!exploredGrid || radiusPx <= 0) return;
+  const C = EXPLORED_CELL_PX, r2 = radiusPx * radiusPx;
+  const cx0 = Math.max(0, Math.floor((wx - radiusPx - worldMinX) / C)), cx1 = Math.min(exploredCols - 1, Math.floor((wx + radiusPx - worldMinX) / C));
+  const cy0 = Math.max(0, Math.floor((wy - radiusPx - worldMinY) / C)), cy1 = Math.min(exploredRows - 1, Math.floor((wy + radiusPx - worldMinY) / C));
+  for(let cy = cy0; cy <= cy1; cy++){
+    const dy = worldMinY + (cy + 0.5) * C - wy;
+    for(let cx = cx0; cx <= cx1; cx++){
+      const dx = worldMinX + (cx + 0.5) * C - wx;
+      if(dx * dx + dy * dy <= r2) exploredGrid[cy * exploredCols + cx] = 1;
+    }
+  }
+}
+function isExploredAt(wx, wy){
+  if(!exploredGrid) return false;
+  const cx = Math.floor((wx - worldMinX) / EXPLORED_CELL_PX), cy = Math.floor((wy - worldMinY) / EXPLORED_CELL_PX);
+  if(cx < 0 || cy < 0 || cx >= exploredCols || cy >= exploredRows) return false;
+  return exploredGrid[cy * exploredCols + cx] === 1;
+}
 function resetFogTiles(){
   for(const t of fogTiles.values()){ t.cv.width = 0; t.cv.height = 0; t.ctx = null; }
   fogTiles = new Map();
@@ -264,6 +319,7 @@ function resetFogTiles(){
   fogTilePx = Math.round(fogTileWorldPx * FOG_RES_SCALE);
   for(const k of Object.keys(fogStats)) fogStats[k] = 0;
   if(typeof resetMiniFog === 'function') resetMiniFog();
+  if(typeof WORLD_W === 'number' && WORLD_W > 0) resetExploredGrid(); // 目印用の探索済みの記録も、霧と一緒に初期化
 }
 
 // タイルを取得する。create=true なら、無い場合に作る（上限に達していたら null を返し、警告を1回だけ出す）。
@@ -314,6 +370,7 @@ function revealFogAt(wx, wy){
       c2d.fill();
     }
   }
+  markExploredAt(wx, wy, rWorld * 0.75 - EXPLORED_CELL_PX * 0.75); // 目印用：霧が完全に晴れた範囲（グラデーションの手前）を記録
   if(typeof revealMiniFog === 'function') revealMiniFog(wx, wy); // ミニマップの霧にも、同じ書き込みを直接行う（ui.js）
   if(CONFIG.DEBUG){ fogStats.reveals++; fogStats.revealMs += performance.now() - t0; }
 }
@@ -825,6 +882,9 @@ function draw(){
   // ヒント掲示板（宝箱と県庁の間の重ね順）
   drawHintBoards(toScreen);
 
+  // 宝箱・掲示板の目印（▼／◆）。スプライトの直後・プレイヤーの前・霧の前なので、霧の下では見えない（items.js）
+  drawItemMarkers(toScreen, z, now);
+
   // 県庁（③ 霧が晴れていない場所ではこの後の霧オーバーレイで自然に隠れる）
   {
     const [sx, sy] = toScreen(worldX(state.boss.lon), worldY(state.boss.lat));
@@ -913,7 +973,13 @@ function endGame(won){
   if(won) clearOverlay.classList.add('show'); else gameOverOverlay.classList.add('show');
 }
 
-window.resetGame = function(){ initGame(); prebakeTerrainAtPlayer(0); }; // 再プレイ：新しいスポーン位置の画面内のタイルを先に焼く
+// 再プレイ：難易度の選択画面を出す設定なら、選択画面に戻る（県は変えない）。選ばれたら、新しいスポーン位置の画面内のタイルを先に焼いて開始。
+// 出さない設定（?diff=指定／SHOW_DIFFICULTY_SELECT=false）なら、従来どおり同じ難易度ですぐ再開する
+window.resetGame = function(){
+  const restart = ()=>{ initGame(); prebakeTerrainAtPlayer(0); };
+  if(difficultySelectEnabled) showDifficultySelect(restart); // ui.js
+  else restart();
+};
 
 // ==== 県ナレッジ（data/pref<XX>/knowledge_<XX>.js の KNOWLEDGE_<XX>） ====
 // ボス戦クイズとヒント掲示板の元データ。1問 = { id, question, options(4つ), answer("0"〜"3"), hint }。
@@ -993,6 +1059,8 @@ function pickPrefectureCode(excluded){
 
 // 県データが読めなかった時の表示（読み込み中の画面を使う。ゲームは開始しない）
 function showStartError(msg){
+  const dOv = document.getElementById('difficultyOverlay'); // 選択画面は閉じて、エラーだけを表示する
+  if(dOv) dOv.classList.remove('show');
   const m = document.getElementById('loadingMsg');
   if(m) m.textContent = msg;
   const o = document.getElementById('loadingOverlay');
@@ -1044,10 +1112,17 @@ function initPrefectureGame(){
   setupWorldCoordinates(); // ワールド座標系（県データのポリゴンから決まる）
   initTerrain();           // terrain.js：メッシュ展開・地形ラスター・テクスチャ読み込み・鉄道/河川canvas
   initMinimap();           // ui.js：ミニマップ用canvas
-  initGame();              // ラン単位の初期化（スポーン・宝箱・霧・タイマー）
-  // テクスチャの読み込みを待ち、スポーン周辺（画面＋1周）の地形タイルを先に焼いてから、読み込み中の表示を消してループを始める
+  // 難易度の選択画面を出す設定なら、選ばれてから最初のラン（initGame）を始める。出さない設定（?diff=指定／SHOW_DIFFICULTY_SELECT=false）なら、すぐ始める
+  if(difficultySelectEnabled) showDifficultySelect(startFirstRun); // ui.js
+  else startFirstRun();
+}
+// 最初のラン：ラン単位の初期化（スポーン・宝箱・霧・タイマー）→ テクスチャの読み込みを待ち、スポーン周辺（画面＋1周）の
+// 地形タイルを先に焼いてから、読み込み中の表示を消してループを始める
+function startFirstRun(){
+  const loadingOverlay = document.getElementById('loadingOverlay');
+  if(loadingOverlay){ const m = document.getElementById('loadingMsg'); if(m) m.textContent = '読み込み中…'; loadingOverlay.classList.add('show'); }
+  initGame();              // ラン単位の初期化（スポーン・宝箱・霧・タイマー）。難易度は gameSettings（選択画面 or URL/CONFIG）
   terrainStartWhenReady(()=>{
-    const loadingOverlay = document.getElementById('loadingOverlay');
     if(loadingOverlay) loadingOverlay.classList.remove('show');
     requestAnimationFrame(loop);
   });
