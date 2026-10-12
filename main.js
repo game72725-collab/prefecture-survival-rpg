@@ -73,8 +73,10 @@ const CONFIG = {
   ANIM_FRAME_MS_BIKE: 45,    // 自転車のコマ送り間隔（素材が無い間はランニング素材を高速コマ送り）
   ANIM_FRAME_MS_KAYAK: 90,   // カヤックのコマ送り間隔
   BIKE_DURATION_SEC: 10,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
-  // 宝箱の中身の抽選の重み（合計に対する割合で出る）。🧭県庁サーチは、発動済み／同じラン内で既に1つ割り当て済みなら抽選から外れる（items.js の pickChestItem）
+  // 宝箱の中身の抽選の重み（合計に対する割合で出る）。上限（ITEM_MAX_PER_RUN）に達した種類は抽選から外れる（items.js の pickChestItem）
   CHEST_ITEM_WEIGHTS: { time: 35, speed: 25, fifty: 25, compass: 15 }, // time=⏱+秒（県の規模でスケール） / speed=👟スピードアップ / fifty=✂️50-50 / compass=🧭県庁サーチ
+  // 1プレイ（1ラン）内の取得上限。宝箱の中身を決めるたびに、上限に達した種類を抽選候補から外し、残りの重み(CHEST_ITEM_WEIGHTS)で再正規化して抽選する（time・speed は上限なし）
+  ITEM_MAX_PER_RUN: { fifty: 3, compass: 1 }, // fifty=3：ボス戦は2問なので「2問＋1の余裕」（宝箱が増えても溜まりすぎない）／compass=1：県庁サーチは1回発動すれば足りる（旧：同一ラン内で重複させない仕様を、一般の上限に置き換え）
   DEBUG_FORCE_ITEM: null,    // 'speed' / 'time' / 'fifty' / 'compass' のどれかにすると全宝箱がそのアイテムになる。null で通常（重み抽選）
   // ---- ヒント掲示板 ----
   HINT_BOARD_SIZE: 60,       // 掲示板の表示高さ(px)
@@ -87,17 +89,17 @@ const CONFIG = {
     // chestCountMul : 宝箱数の難易度別の倍率（宝箱数 = round(spawnMaxKm / KM_PER_CHEST) × この倍率 × ランダム幅。computeChestCount）
     // chestCount    : 【旧・現在は使わない】固定の宝箱数。互換と参考のために残してある（宝箱数は上の式で決まる）
     // timeSec       : 【廃止】制限時間は全難易度・全県共通の CONFIG.TIME_LIMIT_SEC（ここには持たない）
-    EASY:     { spawnPct: [0.10, 0.25], spawnMaxKm: 40,  chestCountMul: 2.30, chestCount: 14 }, // 2.30：基準数6×2.30≒13.8＝旧 chestCount(14) に近づけた
-    NORMAL:   { spawnPct: [0.25, 0.45], spawnMaxKm: 70,  chestCountMul: 1.00, chestCount: 10 }, // 1.00：基準数10×1.00＝旧 chestCount(10)
-    HARD:     { spawnPct: [0.45, 0.70], spawnMaxKm: 95,  chestCountMul: 0.43, chestCount: 6  }, // 0.43：基準数14×0.43≒6.0＝旧 chestCount(6)
-    VERYHARD: { spawnPct: [0.70, 0.95], spawnMaxKm: 115, chestCountMul: 0.19, chestCount: 3  }, // 0.19：基準数16×0.19≒3.0＝旧 chestCount(3)
+    EASY:     { spawnPct: [0.10, 0.25], spawnMaxKm: 40,  chestCountMul: 2.30, chestCount: 14 }, // 2.30：基準数10×2.30＝23個。難易度間の比率（約1.3:1:0.57:0.31）は旧 chestCount(14:10:6:3) に近い
+    NORMAL:   { spawnPct: [0.25, 0.45], spawnMaxKm: 70,  chestCountMul: 1.00, chestCount: 10 }, // 1.00：基準数18×1.00＝18個（NORMAL を基準の1.00にした）
+    HARD:     { spawnPct: [0.45, 0.70], spawnMaxKm: 95,  chestCountMul: 0.43, chestCount: 6  }, // 0.43：基準数24×0.43≒10個（NORMAL比0.57＝旧の 6÷10 に近い）
+    VERYHARD: { spawnPct: [0.70, 0.95], spawnMaxKm: 115, chestCountMul: 0.19, chestCount: 3  }, // 0.19：基準数29×0.19≒5.5個（NORMAL比0.31＝旧の 3÷10 に近い）
   },
   TIME_LIMIT_SEC: 300,       // 制限時間(秒)。全難易度・全県共通（ここ1か所を変えれば全体が変わる）。根拠：県の規模が広い（スポーン最大115km）ので、旧120秒では届かないため、約2.5倍に
   // ---- 宝箱数（難易度の spawnMaxKm に比例。computeChestCount） ----
-  KM_PER_CHEST: 7,           // 宝箱1個あたりの km。基準数＝round(spawnMaxKm÷7)。根拠：NORMAL(70km)で基準数10＝旧 NORMAL の宝箱数(10)に合わせた
+  KM_PER_CHEST: 4,           // 宝箱1個あたりの km。基準数＝round(spawnMaxKm÷4)。【仮置き】7→4：宝箱を増やすため。基準数は EASY10／NORMAL18／HARD24／VERYHARD29（?debug=params の表で確認）
   CHEST_RANDOM_RANGE: 0.25,  // 宝箱数のランダム幅（±25%。gameRandom で一様）。根拠：ランごとに数が少し変わる程度（指定値）
-  CHEST_MIN: 2,              // 宝箱数の下限。根拠：最少の VERYHARD(約3個)が−25%（約2個）でも、0〜1個にならない最小限
-  CHEST_MAX: 20,             // 宝箱数の上限。根拠：最多の EASY(約14個)の+25%（約17個）に余裕を持たせ、置ききれないほど増えないようにする
+  CHEST_MIN: 2,              // 宝箱数の下限。根拠：最少の VERYHARD(現在約5〜6個)が大きく減っても、0〜1個にならない最小限の安全値
+  CHEST_MAX: 40,             // 宝箱数の上限。【仮置き】20→40：現在の最多（EASY 公称23の+25%≒29）に余裕を持たせ、倍率や KM_PER_CHEST を調整しても置ききれないほど増えないようにする
   // ---- 時間アイテム・スピードアイテムの県の規模スケール ----
   // scale = clamp(spawnMaxKm ÷ ITEM_REF_KM, 1, ITEM_SCALE_MAX)。時間アイテム＝TIME_ITEM_BASE_SEC×scale 秒（整数）、スピード＝効果時間のみ BIKE_DURATION_SEC×scale 秒（倍率 SPEED_BIKE_MULT は据え置き）
   ITEM_REF_KM: 40,           // scale=1 になる spawnMaxKm。根拠：最も狭い EASY(40km)で従来どおり（+10秒・10秒）
@@ -108,7 +110,7 @@ const CONFIG = {
   SPAWN_TRIES: 500,          // スポーン抽選の試行回数（範囲を広げる段階ごと）
   HINT_BOARD_COUNT: 20,      // ヒント掲示板の数（県全体に配置。有効な問題がこれより少ない時は問題数まで）
   // 宝箱・掲示板の散らし方。URL の ?scatter=prefecture|reachable が優先（大文字小文字は区別しない）
-  ITEM_SCATTER_MODE: 'prefecture', // 'prefecture'＝県全体（A）／'reachable'＝スポーンから届く範囲（B）
+  ITEM_SCATTER_MODE: 'reachable', // 'prefecture'＝県全体（A）／'reachable'＝スポーンから届く範囲（B。既定）。?scatter= で切替可。根拠：宝箱が増えるので、スポーンから届く範囲に集めて取りやすくする
   ITEM_REACH_FACTOR: 1.3,    // B の半径＝その難易度の spawnMaxKm × この値(km)
   PLACE_MIN_SEP_KM: 0.8,     // 宝箱・掲示板どうしの最小間隔(km)。置けない時は 0.8倍ずつ（最大5回）緩める
   PLACE_MIN_FROM_SPAWN_KM: 0.3, PLACE_MIN_FROM_CAPITAL_KM: 0.5, // スポーン・県庁からの最小距離(km)
@@ -131,7 +133,8 @@ const CONFIG = {
   MARKER_CHEST_COLOR: '#FFC400', // 宝箱：下向き三角▼
   MARKER_BOARD_COLOR: '#FF2D95', // 掲示板：ひし形◆（形が違うので、色が無くても区別できる）
   MARKER_OUTLINE_WHITE_PX: 2, MARKER_OUTLINE_BLACK_PX: 1, // 縁取り：白(内側)の外側に黒
-  MARKER_CULL_MARGIN_PX: 40, // 画面の外側にこの余白を足した範囲の外は描かない
+  MARKER_MARGIN_PX: 40,      // 目印は、その位置（ワールド座標を画面に写した点）が「画面＋この余白」の範囲に入ったら表示する。根拠：端でぱっと出入りしないよう、スプライトの幅の半分ほどの余白
+  MARKER_ONLY_EXPLORED: false, // true にすると、霧が完全に晴れた場所でだけ目印を描く（霧の透過7%で未探索の位置が分かるのを防ぐ。探索済みの記録 isExploredAt を使う）。既定 false：根拠＝指定は「画面内に入ったら表示」。通常の画面内は探索済みなので差はほぼ出ない
   HINT_PANEL_SEC: 8,         // ヒント表示パネルが自動で閉じるまでの秒数（タップでも閉じる）
   // シートごとの表示調整。scale＝PLAYER_SIZEに掛ける倍率、yOffset＝足元位置の下方向ずらし(px)。
   // 人物の大きさ・足元が歩き／走りとずれる素材はここで合わせる。
@@ -181,8 +184,8 @@ function resolveGameSettings(search){
   const modes = ['prefecture', 'reachable'];
   let mode = String(CONFIG.ITEM_SCATTER_MODE).toLowerCase();
   if(!modes.includes(mode)){
-    console.warn('[settings] CONFIG.ITEM_SCATTER_MODE=' + CONFIG.ITEM_SCATTER_MODE + ' は不正です。prefecture を使います');
-    mode = 'prefecture';
+    console.warn('[settings] CONFIG.ITEM_SCATTER_MODE=' + CONFIG.ITEM_SCATTER_MODE + ' は不正です。reachable を使います');
+    mode = 'reachable';
   }
   const ps = params.get('scatter');
   if(ps !== null){
@@ -638,10 +641,11 @@ function initGame(){
   timerEl.textContent = state.timeLeft;
 
   // 宝箱の中身を抽選する。🧭は1つ割り当てたら、同じラン内の残りの宝箱の抽選から外す（2個目は意味がないため）
-  let compassTaken = state.compassActive;
+  // 中身の抽選：そのランで決めた数（種類ごと）を数え、上限（CONFIG.ITEM_MAX_PER_RUN）に達した種類を候補から外す。カウントは initGame（＝1プレイごと）でリセットされる
+  state.itemCounts = {};
   const rollChestItem = ()=>{
-    const it = pickChestItem(compassTaken);
-    if(it === 'compass') compassTaken = true;
+    const it = pickChestItem(state.itemCounts);
+    state.itemCounts[it] = (state.itemCounts[it] || 0) + 1;
     return it;
   };
 
@@ -801,7 +805,7 @@ function update(dtSec, rawMs){
       const opened = state.chests.filter(cc=>cc.state !== 'closed').length;
       chestCountEl.textContent = opened;
       // 🧭が出たが既に発動済みなら、別のアイテムに引き直す
-      if(c.item === 'compass' && state.compassActive) c.item = pickChestItem(true);
+      if(c.item === 'compass' && state.compassActive){ state.itemCounts.compass = Math.max(0, (state.itemCounts.compass || 1) - 1); c.item = pickChestItem(state.itemCounts, ['compass']); state.itemCounts[c.item] = (state.itemCounts[c.item] || 0) + 1; }
       applyChestItem(c.item); // items.js：time / speed / fifty / compass の効果とメッセージ
     }
   });

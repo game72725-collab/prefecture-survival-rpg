@@ -5,10 +5,17 @@
 
 const IMG_CHEST_CLOSED = loadImg('assets/chest_closed.png', chromaKeyBlack);
 const SHEET_CHEST_OPENING = loadSpriteSheet('assets/chest_opening_sheet.png', 9);
-// 宝箱の中身の抽選（CONFIG.CHEST_ITEM_WEIGHTS の重み）。excludeCompass=true なら🧭を候補から外す。
-function pickChestItem(excludeCompass){
+// 宝箱の中身の抽選（重み付き。CONFIG.CHEST_ITEM_WEIGHTS）。counts＝そのランで既に決めた数（種類ごと）。
+// 上限（CONFIG.ITEM_MAX_PER_RUN）に達した種類と excludeKeys を候補から外し、残りの重みの合計で再正規化して抽選する（gameRandom）。候補が空なら、保険として 'time' を返す
+function pickChestItem(counts, excludeKeys){
   if(CONFIG.DEBUG_FORCE_ITEM) return CONFIG.DEBUG_FORCE_ITEM;
-  const pool = Object.keys(CONFIG.CHEST_ITEM_WEIGHTS).filter(k => !(excludeCompass && k === 'compass'));
+  const caps = CONFIG.ITEM_MAX_PER_RUN || {}, cnt = counts || {};
+  const pool = Object.keys(CONFIG.CHEST_ITEM_WEIGHTS).filter(k => {
+    if(excludeKeys && excludeKeys.indexOf(k) >= 0) return false;
+    if(caps[k] !== undefined && (cnt[k] || 0) >= caps[k]) return false;
+    return CONFIG.CHEST_ITEM_WEIGHTS[k] > 0;
+  });
+  if(pool.length === 0) return 'time';
   let total = 0;
   pool.forEach(k => { total += CONFIG.CHEST_ITEM_WEIGHTS[k]; });
   let r = gameRandom() * total;
@@ -91,8 +98,8 @@ function drawHintBoards(toScreen){
 // まだ取得していない宝箱（金色の▼）と、まだ読んでいない掲示板（マゼンタの◆）の上方に、上下に揺れる目印を出す。
 //  ・大きさ・揺れ・縁取りは画面px固定：目印はカメラのズーム変換の内側で描くが、アンカー（スプライト上端）で 1/z に縮めて打ち消す
 //  ・先端は、スプライトの上端の MARKER_GAP_PX 上。揺れは実時間（nowMs＝performance.now）の正弦波なので、フレーム数に依存しない
-//  ・宝箱の中身では変えない（全部同じ▼）。霧の合成より前に描き、さらに「霧が完全に晴れた場所（isExploredAt）」でだけ描くので、
-//    未探索の場所の目印は出ない（霧の透過7%でも位置が分からない）。画面外矢印・距離表示は無い
+//  ・宝箱の中身では変えない（全部同じ▼）。霧の合成より前に描く。表示の条件は「位置が画面＋MARKER_MARGIN_PX に入った」だけ（距離判定は無い）。
+//    CONFIG.MARKER_ONLY_EXPLORED=true なら、霧が完全に晴れた場所（isExploredAt）でだけ描く。画面外矢印・距離表示は無い
 // 目印の形（先端が原点(0,0)・上向きが負）は、最初に1回だけ Path2D にしておき、毎フレームは使い回す。設定（大きさ）が変わったら作り直す
 let markerPaths = null, markerPathKey = '';
 function getMarkerPaths(){
@@ -106,15 +113,15 @@ function getMarkerPaths(){
 }
 function drawItemMarkers(toScreen, z, nowMs){
   if(!CONFIG.SHOW_ITEM_MARKERS) return;
-  const size = CONFIG.MARKER_SIZE_PX, gap = CONFIG.MARKER_GAP_PX, cull = CONFIG.MARKER_CULL_MARGIN_PX;
+  const size = CONFIG.MARKER_SIZE_PX, gap = CONFIG.MARKER_GAP_PX, margin = CONFIG.MARKER_MARGIN_PX, onlyExplored = CONFIG.MARKER_ONLY_EXPLORED;
   const bob = CONFIG.MARKER_BOB_PX * Math.sin(2 * Math.PI * nowMs / CONFIG.MARKER_BOB_PERIOD_MS);
   const wOut = CONFIG.MARKER_OUTLINE_WHITE_PX, bOut = CONFIG.MARKER_OUTLINE_BLACK_PX;
   const paths = getMarkerPaths();
   function one(sx, topY, kind, wx, wyCenter){
-    if(!isExploredAt(wx, wyCenter)) return; // 霧が完全に晴れていない場所では描かない（霧の下で透けて、位置が分かってしまうため）
-    // 画面上の位置（ズームを反映）で、画面＋余白の外はスキップ
-    const px = W/2 + (sx - W/2) * z, py = H/2 + (topY - H/2) * z;
-    if(px < -cull || px > W + cull || py - gap - size - 6 > H + cull || py - gap + 6 < -cull) return;
+    // 画面内（ビューポート＋MARKER_MARGIN_PX）に、目印の位置（ワールド座標を画面に写した点）が入ったら表示。単純な範囲判定だけ（対象は掲示板20個＋宝箱のみ）
+    const px = W/2 + (sx - W/2) * z, tipY = H/2 + (topY - H/2) * z - gap;   // 目印の先端の画面位置（目印はそこから size だけ上）
+    if(px < -margin || px > W + margin || tipY < -margin || tipY - size > H + margin) return;
+    if(onlyExplored && !isExploredAt(wx, wyCenter)) return; // 任意：霧が完全に晴れていない場所では描かない
     const path = paths[kind];
     ctx.save();
     ctx.translate(sx, topY);              // アンカー＝スプライトの上端
@@ -142,3 +149,22 @@ function drawItemMarkers(toScreen, z, nowMs){
 }
 
 // ==== 更新 ====
+
+// ==== デバッグ：?debug=loot で、（pickChestItem はこのファイルにあるので、ここで定義・呼び出す）宝箱の中身の抽選を1000プレイ分シミュレーションし、種類ごとの平均取得数を console.table で出す（通常起動では何も出さない） ====
+// 1プレイ＝NORMAL の宝箱数（computeChestCount。難易度の規模は県によらず spawnMaxKm で決まるので、北海道の NORMAL 相当）ぶんの宝箱を開ける。上限・重みは本番と同じ pickChestItem
+function printLootTable(){
+  const diff = CONFIG.DIFFICULTY.NORMAL, PLAYS = 1000, types = Object.keys(CONFIG.CHEST_ITEM_WEIGHTS);
+  const sum = {}, min = {}, max = {}, capHit = {}; types.forEach(t => { sum[t] = 0; min[t] = Infinity; max[t] = 0; capHit[t] = 0; });
+  let chestsTotal = 0;
+  for(let p = 0; p < PLAYS; p++){
+    const counts = {}, n = computeChestCount(diff); chestsTotal += n;
+    for(let i = 0; i < n; i++){ const it = pickChestItem(counts); counts[it] = (counts[it] || 0) + 1; }
+    types.forEach(t => { const c = counts[t] || 0; sum[t] += c; if(c < min[t]) min[t] = c; if(c > max[t]) max[t] = c;
+      const cap = CONFIG.ITEM_MAX_PER_RUN[t]; if(cap !== undefined && c >= cap) capHit[t]++; });
+  }
+  const rows = types.map(t => ({ '種類': t, '重み': CONFIG.CHEST_ITEM_WEIGHTS[t], '上限': (CONFIG.ITEM_MAX_PER_RUN[t] === undefined ? 'なし' : CONFIG.ITEM_MAX_PER_RUN[t]),
+    '平均取得数': Math.round(sum[t] / PLAYS * 100) / 100, '最小': min[t], '最大': max[t], '上限到達率(%)': (CONFIG.ITEM_MAX_PER_RUN[t] === undefined ? '-' : Math.round(capHit[t] / PLAYS * 1000) / 10) }));
+  rows.push({ '種類': '（宝箱数の平均）', '重み': '', '上限': '', '平均取得数': Math.round(chestsTotal / PLAYS * 100) / 100, '最小': '', '最大': '', '上限到達率(%)': '' });
+  console.table(rows);
+}
+if(new URLSearchParams(window.location.search).get('debug') === 'loot') printLootTable();
