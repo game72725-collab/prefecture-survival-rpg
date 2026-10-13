@@ -5,13 +5,25 @@
 
 const IMG_CHEST_CLOSED = loadImg('assets/chest_closed.png', chromaKeyBlack);
 const SHEET_CHEST_OPENING = loadSpriteSheet('assets/chest_opening_sheet.png', 9);
+// 県の条件で、その種類が抽選に入るか：glider＝森林率+河川率 ≥ GLIDER_MIN_FOREST_RATIO、car＝陸地面積 ≥ CAR_MIN_AREA_KM2。他の種類は常に入る。
+// stats＝県の地形の統計（省略時は今のラン＝読み込み中の県の prefLandStats）。統計がまだ無い時は、条件のある種類は入れない
+function itemAvailable(key, stats){
+  const st = stats || prefLandStats;
+  if(key === 'glider') return !!st && st.forestRiverRatio >= CONFIG.GLIDER_MIN_FOREST_RATIO;
+  if(key === 'car') return !!st && st.landAreaKm2 >= CONFIG.CAR_MIN_AREA_KM2;
+  // 宝箱地図：未取得の宝箱が1つも無ければ抽選候補から外す（ラン中＝宝箱が配置済みの時だけ判定。配置前・?debug=loot のシミュレーションでは常に入る）
+  if(key === 'map') return !(typeof state === 'object' && state && state.chests && state.chests.length > 0) || state.chests.some(c => c.state === 'closed');
+  return true;
+}
 // 宝箱の中身の抽選（重み付き。CONFIG.CHEST_ITEM_WEIGHTS）。counts＝そのランで既に決めた数（種類ごと）。
-// 上限（CONFIG.ITEM_MAX_PER_RUN）に達した種類と excludeKeys を候補から外し、残りの重みの合計で再正規化して抽選する（gameRandom）。候補が空なら、保険として 'time' を返す
-function pickChestItem(counts, excludeKeys){
+// 県の条件を満たさない種類（itemAvailable）、上限（CONFIG.ITEM_MAX_PER_RUN）に達した種類、excludeKeys を候補から外し、残りの重みの合計で再正規化して抽選する（gameRandom）。
+// 候補が空なら、保険として 'time' を返す。stats は ?debug=loot が他県で試す時に渡す（通常は省略）
+function pickChestItem(counts, excludeKeys, stats){
   if(CONFIG.DEBUG_FORCE_ITEM) return CONFIG.DEBUG_FORCE_ITEM;
   const caps = CONFIG.ITEM_MAX_PER_RUN || {}, cnt = counts || {};
   const pool = Object.keys(CONFIG.CHEST_ITEM_WEIGHTS).filter(k => {
     if(excludeKeys && excludeKeys.indexOf(k) >= 0) return false;
+    if(!itemAvailable(k, stats)) return false;
     if(caps[k] !== undefined && (cnt[k] || 0) >= caps[k]) return false;
     return CONFIG.CHEST_ITEM_WEIGHTS[k] > 0;
   });
@@ -26,10 +38,42 @@ function pickChestItem(counts, excludeKeys){
   return pool[pool.length - 1];
 }
 // 宝箱を取った瞬間の効果（update() から呼ばれる）。time/speed/compass はその場で発動、fifty は所持品に入るだけ
+// 🗺宝箱の地図：未取得の宝箱のうち、プレイヤーに最も近い1つを選び、その宝箱を必ず含む円（中心は宝箱からずらす＝宝箱が中心にならない）の霧を晴らす。
+// 半径＝MAP_REVEAL_BASE_KM × scale（scale は時間・スピードと同じ式）。晴らした円は霧タイル（一度晴らした場所が残る方式）とミニマップのマスクに書き込まれ、そのまま残る。
+// 取得中の宝箱（opening）は「未取得」に含めない。対象が無ければ false。
+function activateTreasureMap(){
+  const pWX = worldX(state.player.lon), pWY = worldY(state.player.lat);
+  let best = null, bestD = Infinity;
+  state.chests.forEach(c => {
+    if(c.state !== 'closed') return;
+    const d = distPx(pWX, pWY, worldX(c.lon), worldY(c.lat));
+    if(d < bestD){ bestD = d; best = c; }
+  });
+  if(!best) return false;
+  const pxPerKm = PX_PER_DEG_LAT / KM_PER_DEG_LAT;                       // ワールドpx / km
+  const R = CONFIG.MAP_REVEAL_BASE_KM * state.itemScale * pxPerKm;       // 円の半径（ワールドpx）
+  const range = CONFIG.MAP_OFFSET_RANGE;
+  const off = (range[0] + gameRandom() * (range[1] - range[0])) * R;    // 宝箱から中心までのずれ（半径の25〜60%。円の内側に収まる）
+  const ang = gameRandom() * Math.PI * 2;
+  const cx = worldX(best.lon) + Math.cos(ang) * off, cy = worldY(best.lat) + Math.sin(ang) * off;
+  revealFogDisc(cx, cy, R);                                              // main.js：霧タイル・ミニマップのマスク・探索済み記録に書き込む
+  state.mapReveals.push({ x: cx, y: cy, r: R, chestLat: best.lat, chestLon: best.lon });
+  return true;
+}
+
 function applyChestItem(item){
   if(item === 'speed'){
     activateSpeedBoost();
     showItemMessage('👟 スピードアップ発動！');
+  } else if(item === 'car'){
+    activateCar();
+    showItemMessage('🚗 車に乗った！スピードアップより速い');
+  } else if(item === 'glider'){
+    activateGlider();
+    showItemMessage('🪂 グライダー発動！森や川で遅くならない');
+  } else if(item === 'map'){
+    if(activateTreasureMap()) showItemMessage('🗺 宝箱の地図を手に入れた');
+    else showItemMessage('🗺 宝箱の地図を手に入れた（取れる宝箱はもうありません）');
   } else if(item === 'fifty'){
     grantFiftyFifty();
     showItemMessage('✂️ 50-50 を入手！（ボス戦で使えます）');
@@ -42,18 +86,30 @@ function applyChestItem(item){
     showItemMessage('⏱ 残り時間 +' + sec + '秒');
   }
 }
+// 速度系は1スロットのみ：スピードと車は、新しく取った方が上書きする（効果時間は延長ではなく置き換え）。倍率は main.js の update が speedKind で決める
 function activateSpeedBoost(){
   // 効果時間のみ県の規模スケール倍（倍率 SPEED_BIKE_MULT は据え置き）。ui.js の残量バーが使うので、今回の効果時間も持つ
+  state.speedKind = 'speed';
   state.speedBoostDurationMs = speedBoostSecFor(state.itemScale) * 1000;
   state.speedBoostUntil = performance.now() + state.speedBoostDurationMs;
+}
+function activateCar(){
+  state.speedKind = 'car'; // 倍率 CAR_SPEED_MUL（スピードの上位版）。効果時間のみ scale 倍
+  state.speedBoostDurationMs = carSecFor(state.itemScale) * 1000;
+  state.speedBoostUntil = performance.now() + state.speedBoostDurationMs;
+}
+// グライダー：一定時間、森林・河川の減速を無効にする。速度系とは独立した効果で、同時に有効にできる（再取得は延長ではなく置き換え）
+function activateGlider(){
+  state.gliderDurationMs = gliderSecFor(state.itemScale) * 1000;
+  state.gliderUntil = performance.now() + state.gliderDurationMs;
 }
 // 宝箱を取った時のアイテム入手メッセージ（宝箱はアイテム専用。ヒントは出さない）
 let itemMsgTimer = null;
 function showItemMessage(text){
   hintBanner.innerHTML = '<b>アイテム入手</b><br>' + text;
   hintBanner.classList.add('show');
-  if(itemMsgTimer) clearTimeout(itemMsgTimer);
-  itemMsgTimer = setTimeout(()=> hintBanner.classList.remove('show'), 2200);
+  if(itemMsgTimer) clearPausableTimeout(itemMsgTimer);
+  itemMsgTimer = pausableTimeout(()=> hintBanner.classList.remove('show'), 2200); // ポーズ中は進まない（main.js）
 }
 
 // ✂️50-50 の所持数を1つ増やす（取得してもその場では発動しない。使用はボス戦中の ui.js の useFiftyFifty）
@@ -150,21 +206,33 @@ function drawItemMarkers(toScreen, z, nowMs){
 
 // ==== 更新 ====
 
-// ==== デバッグ：?debug=loot で、（pickChestItem はこのファイルにあるので、ここで定義・呼び出す）宝箱の中身の抽選を1000プレイ分シミュレーションし、種類ごとの平均取得数を console.table で出す（通常起動では何も出さない） ====
-// 1プレイ＝NORMAL の宝箱数（computeChestCount。難易度の規模は県によらず spawnMaxKm で決まるので、北海道の NORMAL 相当）ぶんの宝箱を開ける。上限・重みは本番と同じ pickChestItem
+// ==== デバッグ：?debug=loot で、宝箱の中身の抽選を1000プレイ分シミュレーションし、県ごと（CONFIG.DEBUG_LOOT_PREFS＝北海道・東京）に種類別の平均取得数を console.table で出す（通常起動では何も出さない） ====
+// 1プレイ＝NORMAL の宝箱数（computeChestCount。難易度の規模は県によらず spawnMaxKm で決まる）ぶんの宝箱を開ける。県の条件（グライダー・車）・上限・重みは本番と同じ pickChestItem（stats はその県の統計）
 function printLootTable(){
   const diff = CONFIG.DIFFICULTY.NORMAL, PLAYS = 1000, types = Object.keys(CONFIG.CHEST_ITEM_WEIGHTS);
-  const sum = {}, min = {}, max = {}, capHit = {}; types.forEach(t => { sum[t] = 0; min[t] = Infinity; max[t] = 0; capHit[t] = 0; });
-  let chestsTotal = 0;
-  for(let p = 0; p < PLAYS; p++){
-    const counts = {}, n = computeChestCount(diff); chestsTotal += n;
-    for(let i = 0; i < n; i++){ const it = pickChestItem(counts); counts[it] = (counts[it] || 0) + 1; }
-    types.forEach(t => { const c = counts[t] || 0; sum[t] += c; if(c < min[t]) min[t] = c; if(c > max[t]) max[t] = c;
-      const cap = CONFIG.ITEM_MAX_PER_RUN[t]; if(cap !== undefined && c >= cap) capHit[t]++; });
-  }
-  const rows = types.map(t => ({ '種類': t, '重み': CONFIG.CHEST_ITEM_WEIGHTS[t], '上限': (CONFIG.ITEM_MAX_PER_RUN[t] === undefined ? 'なし' : CONFIG.ITEM_MAX_PER_RUN[t]),
-    '平均取得数': Math.round(sum[t] / PLAYS * 100) / 100, '最小': min[t], '最大': max[t], '上限到達率(%)': (CONFIG.ITEM_MAX_PER_RUN[t] === undefined ? '-' : Math.round(capHit[t] / PLAYS * 1000) / 10) }));
-  rows.push({ '種類': '（宝箱数の平均）', '重み': '', '上限': '', '平均取得数': Math.round(chestsTotal / PLAYS * 100) / 100, '最小': '', '最大': '', '上限到達率(%)': '' });
-  console.table(rows);
+  return Promise.all(CONFIG.DEBUG_LOOT_PREFS.map(code => fetchPrefLandStats(code).catch(e => { console.warn('[loot] 県' + code + ' の地形統計を計算できません: ' + e); return null; }))).then(statsList => {
+    const rows = [];
+    CONFIG.DEBUG_LOOT_PREFS.forEach((code, pi) => {
+      const st = statsList[pi]; if(!st) return;
+      const sum = {}, min = {}, max = {}, capHit = {}; types.forEach(t => { sum[t] = 0; min[t] = Infinity; max[t] = 0; capHit[t] = 0; });
+      let chestsTotal = 0;
+      for(let p = 0; p < PLAYS; p++){
+        const counts = {}, n = computeChestCount(diff); chestsTotal += n;
+        for(let i = 0; i < n; i++){ const it = pickChestItem(counts, null, st); counts[it] = (counts[it] || 0) + 1; }
+        types.forEach(t => { const c = counts[t] || 0; sum[t] += c; if(c < min[t]) min[t] = c; if(c > max[t]) max[t] = c;
+          const cap = CONFIG.ITEM_MAX_PER_RUN[t]; if(cap !== undefined && c >= cap) capHit[t]++; });
+      }
+      types.forEach(t => rows.push({ '県コード': code, '種類': t, '抽選に入る': itemAvailable(t, st) ? '○' : '×（県の条件）', '重み': CONFIG.CHEST_ITEM_WEIGHTS[t],
+        '上限': (CONFIG.ITEM_MAX_PER_RUN[t] === undefined ? 'なし' : CONFIG.ITEM_MAX_PER_RUN[t]), '平均取得数': Math.round(sum[t] / PLAYS * 100) / 100,
+        '最小': (min[t] === Infinity ? 0 : min[t]), '最大': max[t], '上限到達率(%)': (CONFIG.ITEM_MAX_PER_RUN[t] === undefined ? '-' : Math.round(capHit[t] / PLAYS * 1000) / 10) }));
+      rows.push({ '県コード': code, '種類': '（宝箱数の平均）', '抽選に入る': '', '重み': '', '上限': '', '平均取得数': Math.round(chestsTotal / PLAYS * 100) / 100, '最小': '', '最大': '', '上限到達率(%)': '' });
+    });
+    console.table(rows);
+  });
 }
-if(new URLSearchParams(window.location.search).get('debug') === 'loot') printLootTable();
+// デバッグ表の呼び出し（terrain.js の expandLanduseGrid・computeLandStats が読み込まれた後のここで行う。通常起動では何も出さない）
+(function(){
+  const dbg = new URLSearchParams(window.location.search).get('debug');
+  if(dbg === 'params') printParamsTable();
+  else if(dbg === 'loot') printLootTable();
+})();

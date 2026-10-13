@@ -26,6 +26,13 @@
     font-weight:bold; font-size: 16px; border-bottom: 2px solid #000;
   }
   #timer.low { color: #ff5a5a; }
+  /* ポーズボタン（HUD右端。高さはヒントボタンと同じ28pxで、HUDの高さ・マップの大きさを変えない）。ポーズできない間（読み込み中・選択画面・結果画面）は見えない */
+  #pauseBtn { margin-left:8px; width:38px; height:28px; padding:0; font-size:14px; line-height:1; border-radius:8px; border:1px solid #566c85; background:#3a4a5f; color:#fff; }
+  #pauseBtn:active { background:#566c85; }
+  /* ポーズ画面：アプリ全体を覆う不透明なオーバーレイ（マップ・ミニマップ・クイズの問題文・ヒント一覧をすべて隠す）。表示するのは再開ボタンだけ */
+  #pauseOverlay { z-index: 40; background: #080c11; touch-action: none; }
+  #pauseOverlay h2 { font-size: 22px; margin: 0 0 8px; color:#e8ecf1; }
+  #pauseNote { min-height: 18px; margin: 0 0 18px; font-size: 13px; opacity: 0.8; }
   #canvasWrap { flex: 1; position: relative; overflow: hidden; background: #0d2436; }
   canvas { display:block; width:100%; height:100%; }
 
@@ -37,14 +44,20 @@
   }
   #layerToggles label { display:flex; align-items:center; gap:4px; white-space:nowrap; cursor:pointer; }
   #layerToggles input { margin:0; width:12px; height:12px; }
-  #boostHud {
-    position:absolute; left:10px; top:10px; z-index:12; display:none; align-items:center; gap:6px;
-    background: rgba(15,22,32,0.85); border:1px solid #ffd93d; border-radius:10px; padding:6px 10px; font-size:14px;
+  /* 効果の残量バー（左上に横並び）。速度系（スピード👟／車🚗）とグライダー🪂は、有効な効果ごとに出る */
+  #effectHud { position:absolute; left:10px; top:10px; z-index:12; display:flex; gap:6px; }
+  .effHud {
+    display:none; align-items:center; gap:5px;
+    background: rgba(15,22,32,0.85); border:1px solid #ffd93d; border-radius:10px; padding:6px 8px; font-size:14px;
   }
-  #boostHud.show { display:flex; }
-  #boostBarWrap { width:70px; height:8px; background:#2b3644; border-radius:4px; overflow:hidden; }
+  .effHud.show { display:flex; }
+  #boostHud.car { border-color:#ff9f43; }
+  #gliderHud { border-color:#7fd1ff; }
+  .effBarWrap { width:46px; height:8px; background:#2b3644; border-radius:4px; overflow:hidden; }
   #boostBar { height:100%; width:100%; background:#ffd93d; }
-  #boostSec { min-width:24px; font-variant-numeric: tabular-nums; }
+  #boostHud.car #boostBar { background:#ff9f43; }
+  #gliderBar { height:100%; width:100%; background:#7fd1ff; }
+  .effSec { min-width:24px; font-variant-numeric: tabular-nums; }
   #hintBanner {
     position:absolute; left:10px; right:10px; bottom:10px;
     background: rgba(15,22,32,0.92); border:1px solid #5ecb63;
@@ -152,6 +165,7 @@
     <div>⏱ <span id="timer">300</span>秒</div>
     <button id="hintListBtn" type="button">💡 ヒント(0)</button>
     <div>📦 <span id="chestCount">0</span>/<span id="chestTotal">4</span></div>
+    <button id="pauseBtn" type="button" aria-label="一時停止" style="visibility:hidden" disabled>⏸</button>
   </div>
 
   <div id="canvasWrap">
@@ -161,7 +175,10 @@
       <label><input type="checkbox" id="toggleRail" checked> 鉄道</label>
       <label><input type="checkbox" id="toggleRiver" checked> 河川</label>
     </div>
-    <div id="boostHud"><span>👟</span><div id="boostBarWrap"><div id="boostBar"></div></div><span id="boostSec"></span></div>
+    <div id="effectHud">
+      <div id="boostHud" class="effHud"><span id="boostIcon">👟</span><div class="effBarWrap"><div id="boostBar"></div></div><span id="boostSec" class="effSec"></span></div>
+      <div id="gliderHud" class="effHud"><span>🪂</span><div class="effBarWrap"><div id="gliderBar"></div></div><span id="gliderSec" class="effSec"></span></div>
+    </div>
     <div id="hintBanner"></div>
     <div id="hintPanel"><b>💡 ヒント</b><br><span id="hintPanelText"></span><span id="hintPanelNote">タップで閉じる</span></div>
     <div id="hintListPanel">
@@ -202,6 +219,15 @@
       <div class="dbtn" id="left">◀</div>
       <div class="dbtn" id="right">▶</div>
       <div class="dbtn" id="down">▼</div>
+    </div>
+  </div>
+
+  <!-- ポーズ画面（アプリ全体を覆う。不透明）。ポーズ中に見えるのは「再開」ボタンだけ -->
+  <div id="pauseOverlay" class="overlay">
+    <div>
+      <h2>一時停止中</h2>
+      <p id="pauseNote"></p>
+      <button id="resumeBtn" class="bigbtn" type="button">▶ 再開</button>
     </div>
   </div>
 

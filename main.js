@@ -74,10 +74,24 @@ const CONFIG = {
   ANIM_FRAME_MS_KAYAK: 90,   // カヤックのコマ送り間隔
   BIKE_DURATION_SEC: 10,     // スピードアップの効果時間（秒）。発動中に再取得すると、この値に戻る（加算はしない）
   // 宝箱の中身の抽選の重み（合計に対する割合で出る）。上限（ITEM_MAX_PER_RUN）に達した種類は抽選から外れる（items.js の pickChestItem）
-  CHEST_ITEM_WEIGHTS: { time: 35, speed: 25, fifty: 25, compass: 15 }, // time=⏱+秒（県の規模でスケール） / speed=👟スピードアップ / fifty=✂️50-50 / compass=🧭県庁サーチ
+  CHEST_ITEM_WEIGHTS: { time: 35, speed: 25, fifty: 25, compass: 15, glider: 10, car: 8, map: 6 }, // time=⏱+秒（県の規模でスケール） / speed=👟スピードアップ / fifty=✂️50-50 / compass=🧭県庁サーチ / glider=🪂減速無効 / car=🚗スピード上位版 / map=🗺宝箱地図
+  // 新アイテムの重み（glider 10・car 8）：既存で最も低い compass(15) より低くして「希少」にする（県の条件を満たす県でだけ抽選に入るので、合計に占める割合はさらに小さい）
+  // 宝箱地図の重み(map 6)：既存で最も低い car(8) よりさらに低くして「最も希少」にする（取得すると近くの宝箱を含む広い範囲の霧が晴れ、強いため）
+  // 宝箱地図：未取得の宝箱（プレイヤーに最も近い1つ）を必ず含む円の霧を、中心をずらして晴らす。晴らした円は霧タイル・ミニマップのマスクに書き込まれ、そのまま残る
+  MAP_REVEAL_BASE_KM: 3,     // 宝箱地図で晴らす円の半径(km、scale=1のとき)。実際は ×scale（③の式）。【仮置き】通常の視界半径(約2.6km)より少し大きく、scale倍(1〜3)で最大9km
+  MAP_OFFSET_RANGE: [0.25, 0.6], // 円の中心を宝箱からずらす量（半径に対する割合の [最小, 最大]、向きはランダム）。根拠：宝箱が中心にならない（≥25%）、かつ円の内側に余裕を持って入る（≤60%＜解除グラデーション開始の75%）
+  // 県の条件で抽選に入るか：glider＝森林率+河川率 ≥ GLIDER_MIN_FOREST_RATIO、car＝陸地面積 ≥ CAR_MIN_AREA_KM2（満たさない県では抽選候補から外す。items.js の itemAvailable）
+  GLIDER_BASE_SEC: 10,       // グライダーの効果時間（秒、scale=1のとき）。根拠：スピード(BIKE_DURATION_SEC=10)と同じ長さで、scale倍の式も同じ（speedBoostSecFor と同様）
+  GLIDER_MIN_FOREST_RATIO: 0.4, // グライダーが抽選に入る県の下限（森林率+河川率）。【仮置き】減速（森林・河川）の多い県でだけ役に立つ。実際の値は ?debug=params の表で見て決める
+  CAR_SPEED_MUL: 2.4,        // 車の速度倍率（地形の倍率に掛け算）。根拠：スピード(SPEED_BIKE_MULT=1.7)の上位版として、約1.4倍速い
+  CAR_BASE_SEC: 10,          // 車の効果時間（秒、scale=1のとき）。根拠：スピードと同じ長さ（scale倍の式も同じ）
+  CAR_MIN_AREA_KM2: 5000,    // 車が抽選に入る県の下限（陸地面積km²）。【仮置き】狭い県では、速すぎて県の端まで一気に着いてしまうため
+  ASSET_GLIDER: 'assets/glider.png', ASSET_CAR: 'assets/car.png', // 画像のファイル名のみ（画像は未作成。使う時に loadImg で読み込む。今は読み込まない＝404を出さない）
+  AUTO_PAUSE: true,          // 画面が見えなくなった時（visibilitychange=hidden）・ウィンドウが blur した時に自動でポーズする（自動再開はしない。再開ボタンで戻る）。指定どおり
+  DEBUG_LOOT_PREFS: [1, 13], // ?debug=loot でシミュレーションする県のコード。根拠：北海道（広い）と東京（狭い）の両方で、県の条件による違いを見る
   // 1プレイ（1ラン）内の取得上限。宝箱の中身を決めるたびに、上限に達した種類を抽選候補から外し、残りの重み(CHEST_ITEM_WEIGHTS)で再正規化して抽選する（time・speed は上限なし）
-  ITEM_MAX_PER_RUN: { fifty: 3, compass: 1 }, // fifty=3：ボス戦は2問なので「2問＋1の余裕」（宝箱が増えても溜まりすぎない）／compass=1：県庁サーチは1回発動すれば足りる（旧：同一ラン内で重複させない仕様を、一般の上限に置き換え）
-  DEBUG_FORCE_ITEM: null,    // 'speed' / 'time' / 'fifty' / 'compass' のどれかにすると全宝箱がそのアイテムになる。null で通常（重み抽選）
+  ITEM_MAX_PER_RUN: { fifty: 3, compass: 1, glider: 2, car: 2, map: 2 }, // fifty=3：ボス戦は2問なので「2問＋1の余裕」／compass=1：県庁サーチは1回発動すれば足りる／glider=2・car=2：効果時間が短い（10秒×scale）ので、2回までなら溜まりすぎず、希少さも保てる／map=2：1回で広い範囲が晴れるので、2回までで探索の面白さを残す
+  DEBUG_FORCE_ITEM: null,    // 'speed' / 'time' / 'fifty' / 'compass' / 'glider' / 'car' / 'map' のどれかにすると全宝箱がそのアイテムになる。null で通常（重み抽選）
   // ---- ヒント掲示板 ----
   HINT_BOARD_SIZE: 60,       // 掲示板の表示高さ(px)
   // ---- 難易度・スポーン・配置（県の大きさ R＝県庁から県境までの最大距離 に対する割合と、難易度で決める） ----
@@ -258,6 +272,9 @@ const chestCountEl = document.getElementById('chestCount');
 const chestTotalEl = document.getElementById('chestTotal');
 const hintBanner = document.getElementById('hintBanner');
 const boostHud = document.getElementById('boostHud'), boostBar = document.getElementById('boostBar'), boostSec = document.getElementById('boostSec');
+const gliderHud = document.getElementById('gliderHud'), gliderBar = document.getElementById('gliderBar'), gliderSec = document.getElementById('gliderSec'), boostIcon = document.getElementById('boostIcon');
+// 県の地形の統計（terrain.js の buildLanduseGrid が、地形格子の展開後に1回だけ計算する。{ forestRiverRatio, landAreaKm2, … }）。グライダー・車が抽選に入るかの判定に使う
+var prefLandStats = null;
 
 const quizOverlay = document.getElementById('quizOverlay');
 const quizQuestion = document.getElementById('quizQuestion');
@@ -364,10 +381,14 @@ function getFogTile(tx, ty, create){
 // 現在地周辺の霧を晴らす（永続）。旧マスクと同じ描画操作（半径 FOG_REVEAL_RADIUS_BASE_PX×ZOOM_FACTOR×FOG_RES_SCALE の
 // 放射グラデーションの円。中心〜75%は不透明な白、縁に向かって透明）を、円のbboxが触れるすべてのタイルに行う。
 function revealFogAt(wx, wy){
+  // 霧の解除半径はZOOM_FACTORに連動（ズームしても現実換算の視界範囲が変わらないようにする）
+  revealFogDisc(wx, wy, CONFIG.FOG_REVEAL_RADIUS_BASE_PX * CONFIG.ZOOM_FACTOR);
+}
+// 中心(wx,wy)・半径 rWorld（ワールドpx）の円の霧を晴らす（霧タイルに白いグラデーションの円を書き込む＝一度晴らした場所が残る）。revealFogAt（通常の視界）と、宝箱地図（大きな円）が使う。
+// 円と重なるタイルだけを更新する（新しいcanvasは作らない）。ミニマップのマスク・目印用の探索済み記録にも、同じ円を書き込む
+function revealFogDisc(wx, wy, rWorld){
   const t0 = CONFIG.DEBUG ? performance.now() : 0;
   const S = FOG_RES_SCALE, F = fogTileWorldPx, M = FOG_TILE_MARGIN;
-  // 霧の解除半径はZOOM_FACTORに連動（ズームしても現実換算の視界範囲が変わらないようにする）
-  const rWorld = CONFIG.FOG_REVEAL_RADIUS_BASE_PX * CONFIG.ZOOM_FACTOR;
   const r = rWorld * S;
   const pad = rWorld + M / S; // 円＋タイルの余白（ワールドpx）
   const tx0 = Math.floor((wx - pad - tileOriginX) / F), tx1 = Math.floor((wx + pad - tileOriginX) / F);
@@ -389,7 +410,7 @@ function revealFogAt(wx, wy){
     }
   }
   markExploredAt(wx, wy, rWorld * 0.75 - EXPLORED_CELL_PX * 0.75); // 目印用：霧が完全に晴れた範囲（グラデーションの手前）を記録
-  if(typeof revealMiniFog === 'function') revealMiniFog(wx, wy); // ミニマップの霧にも、同じ書き込みを直接行う（ui.js）
+  if(typeof revealMiniFog === 'function') revealMiniFog(wx, wy, rWorld); // ミニマップの霧にも、同じ書き込みを直接行う（ui.js）
   if(CONFIG.DEBUG){ fogStats.reveals++; fogStats.revealMs += performance.now() - t0; }
 }
 
@@ -550,6 +571,8 @@ function computeChestCount(diff){
 function itemScaleFor(diff){ return Math.max(1, Math.min(CONFIG.ITEM_SCALE_MAX, diff.spawnMaxKm / CONFIG.ITEM_REF_KM)); }
 function timeItemSecFor(scale){ return Math.round(CONFIG.TIME_ITEM_BASE_SEC * scale); }          // 時間アイテムの秒数（整数）
 function speedBoostSecFor(scale){ return CONFIG.BIKE_DURATION_SEC * scale; }                      // スピードアイテムの効果時間（秒）。倍率 SPEED_BIKE_MULT はスケールしない
+function gliderSecFor(scale){ return CONFIG.GLIDER_BASE_SEC * scale; }                              // グライダーの効果時間（秒）
+function carSecFor(scale){ return CONFIG.CAR_BASE_SEC * scale; }                                    // 車の効果時間（秒）。倍率 CAR_SPEED_MUL はスケールしない
 
 // 掲示板（1問に1枚・重複なし）と宝箱をまとめて配置する（掲示板を先に置く）。
 //   モードA 'prefecture'：県の外接矩形から一様乱数で点を取り、条件を満たすものを採用（面積に比例して散る）
@@ -627,6 +650,8 @@ function initGame(){
     timeLeft: CONFIG.TIME_LIMIT_SEC, // 全難易度・全県共通
     itemScale: itemScaleFor(diff),   // 時間・スピードアイテムの県の規模スケール（items.js）
     speedBoostUntil: 0, // スピードアップの終了時刻(performance.now基準)。0＝非発動
+    speedKind: 'speed', // 速度系スロットの種類：'speed'（倍率 SPEED_BIKE_MULT）／'car'（倍率 CAR_SPEED_MUL）。速度系は1スロットのみで、新しく取った方が上書きする
+    gliderUntil: 0, gliderDurationMs: 0, // グライダー（減速無効）の終了時刻・効果時間。速度系とは独立で、同時に有効にできる
     running: true,
     mode: 'playing',
     quizStep: 0,
@@ -664,7 +689,9 @@ function initGame(){
 
   hideAllOverlays();
   resetHintUI(); // ヒントのパネル／一覧／ボタン表示を初期状態へ（ui.js）
-  boostHud.classList.remove('show');
+  boostHud.classList.remove('show'); gliderHud.classList.remove('show');
+  state.mapReveals = [];  // 宝箱地図で晴らした円の記録（中心・半径。検証用。霧そのものは霧タイル・ミニマップのマスクに残る）
+  resetPauseState();      // ラン開始でポーズ状態を解除（再プレイ時の取りこぼし防止）
   revealFogAt(worldX(spawn.lon), worldY(spawn.lat)); // スポーン地点周辺は最初から視界を確保
   lastTime = performance.now();
 }
@@ -732,17 +759,18 @@ function update(dtSec, rawMs){
   // 現在地の地形から、このフレームの速度・アニメーションを決定する
   const landCode = getLanduseCode(state.player.lat, state.player.lon);
   const boosting = now < state.speedBoostUntil;
+  const gliding = now < state.gliderUntil; // グライダー：森林・河川の減速を無効にする（速度系とは独立）
   let speedMult = 1;
   let targetSheet = SHEET_PLAYER_RUN, frameMs = CONFIG.ANIM_FRAME_MS_NORMAL;
   if(landCode === LANDUSE_FOREST){
-    speedMult = CONFIG.SPEED_FOREST_MULT;
+    speedMult = gliding ? 1 : CONFIG.SPEED_FOREST_MULT;
     targetSheet = SHEET_PLAYER_WALK; frameMs = CONFIG.ANIM_FRAME_MS_FOREST;
   } else if(landCode === LANDUSE_RIVER){
-    speedMult = CONFIG.RIVER_SPEED_MULTIPLIER; // 森林よりさらに遅い
+    speedMult = gliding ? 1 : CONFIG.RIVER_SPEED_MULTIPLIER; // 森林よりさらに遅い（グライダー中は減速なし）
     targetSheet = SHEET_PLAYER_KAYAK; frameMs = CONFIG.ANIM_FRAME_MS_KAYAK; // 川ではカヤック表示（スピードアップ中も優先）
   }
   if(boosting){
-    speedMult *= CONFIG.SPEED_BIKE_MULT; // 地形の倍率の上に掛け算で重ねる
+    speedMult *= (state.speedKind === 'car') ? CONFIG.CAR_SPEED_MUL : CONFIG.SPEED_BIKE_MULT; // 地形の倍率の上に掛け算で重ねる（車はスピードの上位版）
     if(landCode !== LANDUSE_RIVER){
       // 自転車の素材シートがまだ無い／読めない間は、ランニング素材を高速コマ送りで代用する
       targetSheet = SHEET_PLAYER_BIKE.ready ? SHEET_PLAYER_BIKE : SHEET_PLAYER_RUN;
@@ -805,6 +833,8 @@ function update(dtSec, rawMs){
       const opened = state.chests.filter(cc=>cc.state !== 'closed').length;
       chestCountEl.textContent = opened;
       // 🧭が出たが既に発動済みなら、別のアイテムに引き直す
+      // 🗺が出たが、取れる（未取得の）宝箱がもう無いなら、別のアイテムに引き直す
+      if(c.item === 'map' && !itemAvailable('map')){ state.itemCounts.map = Math.max(0, (state.itemCounts.map || 1) - 1); c.item = pickChestItem(state.itemCounts, ['map']); state.itemCounts[c.item] = (state.itemCounts[c.item] || 0) + 1; }
       if(c.item === 'compass' && state.compassActive){ state.itemCounts.compass = Math.max(0, (state.itemCounts.compass || 1) - 1); c.item = pickChestItem(state.itemCounts, ['compass']); state.itemCounts[c.item] = (state.itemCounts[c.item] || 0) + 1; }
       applyChestItem(c.item); // items.js：time / speed / fifty / compass の効果とメッセージ
     }
@@ -965,13 +995,76 @@ function draw(){
 }
 
 // ミニマップ用の使い回しキャンバス（霧オーバーレイの合成用）。サイズはワールド比で固定なので一度だけ作る。
+// ==== ポーズ ====
+// ポーズ中は、dt・制限時間・効果時間・霧・アニメ・入力による移動をすべて止め（loop が更新も描画もしない）、不透明なオーバーレイ（#pauseOverlay）で
+// マップ・ミニマップ・クイズの問題文・ヒント一覧をすべて隠す（推理の抜け道を作らない）。表示するのは「再開」ボタンだけ。
+// 時刻（performance.now 基準）で持っている状態（効果の終了時刻・宝箱の開封アニメ・通知／ヒントパネル／誤答トーストのタイマー）は、再開時にポーズした時間ぶんずらす。
+// 自動ポーズ（画面が見えなくなった／ウィンドウが blur）の後も、自動では再開しない。連打・二重ポーズは無害（pauseGame／resumeGame は冪等）。
+let paused = false, pauseStartMs = 0, pendingEnd = null;
+const pauseOverlay = document.getElementById('pauseOverlay'), pauseNote = document.getElementById('pauseNote');
+const pausableTimers = new Set();
+// ポーズで止まる setTimeout（通知・ヒントパネルの自動閉じ・誤答トーストなど、ゲーム内の時間で進める UI 用）
+function pausableTimeout(fn, ms){
+  const t = { fn: fn, remaining: ms, start: 0, id: null };
+  const arm = ()=>{ t.start = performance.now(); t.id = setTimeout(()=>{ t.id = null; pausableTimers.delete(t); fn(); }, Math.max(0, t.remaining)); };
+  t.arm = arm; pausableTimers.add(t);
+  if(!paused) arm();
+  return t;
+}
+function clearPausableTimeout(t){ if(!t) return; if(t.id !== null) clearTimeout(t.id); pausableTimers.delete(t); }
+function clearKeys(){ for(const k in keys) keys[k] = false; }
+// ポーズできる状況：ループが動いていて、フィールド（playing）かボス戦（quiz。クイズ中を含む）の時
+function canPause(){
+  return loopStarted && state && (state.mode === 'playing' || state.mode === 'quiz');
+}
+function pauseGame(auto){
+  if(paused || !canPause()) return false;
+  paused = true; pauseStartMs = performance.now();
+  clearKeys();
+  pausableTimers.forEach(t => { if(t.id !== null){ clearTimeout(t.id); t.id = null; t.remaining -= (pauseStartMs - t.start); } });
+  if(pauseNote) pauseNote.textContent = auto ? '画面が切り替わったため、一時停止しました' : '';
+  pauseOverlay.classList.add('show');
+  return true;
+}
+function resumeGame(){
+  if(!paused) return false;
+  const t = performance.now(), delta = Math.max(0, t - pauseStartMs);
+  // 時刻で持っている状態を、ポーズした時間ぶん進める
+  if(state.speedBoostUntil > 0) state.speedBoostUntil += delta;
+  if(state.gliderUntil > 0) state.gliderUntil += delta;
+  state.chests.forEach(c => { if(c.state === 'opening') c.openStart += delta; });
+  paused = false;
+  lastTime = t; lastFrameTime = null; // 前フレーム時刻を現在時刻にリセット：再開後の最初のフレームの dt・制限時間の経過が巨大にならない
+  pausableTimers.forEach(x => { if(x.id === null) x.arm(); });
+  clearKeys();
+  pauseOverlay.classList.remove('show');
+  if(pendingEnd !== null){ const w = pendingEnd; pendingEnd = null; endGame(w); }
+  return true;
+}
+function resetPauseState(){
+  paused = false; pendingEnd = null; pauseOverlay.classList.remove('show');
+  pausableTimers.forEach(t => { if(t.id !== null) clearTimeout(t.id); }); pausableTimers.clear();
+}
+if(CONFIG.AUTO_PAUSE){
+  document.addEventListener('visibilitychange', ()=>{ if(document.hidden) pauseGame(true); });
+  window.addEventListener('blur', ()=>{ pauseGame(true); });
+}
+
 // ==== ゲームループ（デルタタイム方式） ====
 // rAFのタイムスタンプ差から dt を求める。最初のフレームは 1/60 秒。上限は CONFIG.DT_MAX_SEC。
 // タブが非表示→表示に戻った時は前フレームのタイムスタンプを捨てる（戻った最初のフレームは 1/60 秒）。
 // 残り時間タイマーだけは従来どおり実時間（rawMs＝lastTime との差、頭打ちなし）で減らす。
 let lastFrameTime = null;
 document.addEventListener('visibilitychange', ()=>{ lastFrameTime = null; });
+let loopStarted = false; // ループが始まったか（読み込み中・選択画面ではポーズ不可にするため）
 function loop(now){
+  loopStarted = true;
+  if(paused){ // ポーズ中：更新も描画もしない（dt・制限時間・効果時間・霧・アニメ・移動がすべて止まる）。再開時に基準時刻を取り直すので、ここでは何も溜めない
+    lastTime = now; lastFrameTime = null;
+    requestAnimationFrame(loop);
+    return;
+  }
+  updatePauseButton(); // ui.js：ポーズボタンの有効／無効
   const rawMs = now - lastTime; lastTime = now;               // タイマー用の実経過時間（従来どおり）
   let dtSec = (lastFrameTime === null) ? 1/60 : (now - lastFrameTime) / 1000;
   lastFrameTime = now;
@@ -1009,6 +1102,7 @@ function updateDebugHud(dtSec, rawDtSec){
 
 // ==== クイズ ====
 function endGame(won){
+  if(paused){ pendingEnd = won; return; } // ポーズ中は結果画面を出さない（再開した時に反映する）
   state.mode = won ? 'clear' : 'gameover';
   updateHintButtonVisibility(); // ui.js：フィールドで遊んでいる間（playing）だけヒントボタンを表示
   if(won) clearOverlay.classList.add('show'); else gameOverOverlay.classList.add('show');
@@ -1169,15 +1263,31 @@ function startFirstRun(){
   });
 }
 
-// ==== デバッグ：?debug=params で、現在読み込める全県 × 4難易度の「宝箱数・アイテム効果」の表を console.table で出す（通常起動では何も出さない） ====
+// ==== デバッグ：?debug=params で、現在読み込める全県 × 4難易度の表を console.table で出す（通常起動では何も出さない） ====
+// 県の地形の統計（森林率+河川率・陸地面積）は、各県の data_mesh.js を fetch して、ゲームと同じ展開・計算（terrain.js の expandLanduseGrid / computeLandStats）で求める。
+// 呼び出しは、terrain.js・items.js が読み込まれた後（items.js の末尾）。
+function fetchPrefLandStats(code){
+  const nn = String(code).padStart(2, '0');
+  return fetch('data/pref' + nn + '/data_mesh.js').then(r => { if(!r.ok) throw new Error('HTTP ' + r.status); return r.text(); }).then(text => {
+    const d = new Function(text + '\n;return { runs: MESH_RUNS_FLAT, order: LANDUSE_ORDER, cellLat: MESH_CELL_LAT_DEG, cellLon: MESH_CELL_LON_DEG };')();
+    return computeLandStats(expandLanduseGrid(d.runs, d.order, d.cellLat, d.cellLon), d.order);
+  });
+}
 function printParamsTable(){
   const codes = (typeof AVAILABLE_PREFECTURE_CODES !== 'undefined') ? AVAILABLE_PREFECTURE_CODES : [];
-  const rows = [];
-  codes.forEach(code => Object.keys(CONFIG.DIFFICULTY).forEach(key => {
-    const d = CONFIG.DIFFICULTY[key], r = chestCountRange(d), sc = itemScaleFor(d);
-    rows.push({ '県コード': code, '難易度': key, 'spawnMaxKm': d.spawnMaxKm, '宝箱数の基準値': r.base, '宝箱数の範囲(min-max)': r.min + '-' + r.max,
-                '時間アイテム秒数': timeItemSecFor(sc), 'スピード効果時間(秒)': Math.round(speedBoostSecFor(sc) * 10) / 10 });
-  }));
-  console.table(rows);
+  return Promise.all(codes.map(code => fetchPrefLandStats(code).catch(e => { console.warn('[params] 県' + code + ' の地形統計を計算できません: ' + e); return null; }))).then(statsList => {
+    const rows = [];
+    codes.forEach((code, i) => {
+      const st = statsList[i];
+      Object.keys(CONFIG.DIFFICULTY).forEach(key => {
+        const d = CONFIG.DIFFICULTY[key], r = chestCountRange(d), sc = itemScaleFor(d);
+        rows.push({ '県コード': code, '難易度': key, 'spawnMaxKm': d.spawnMaxKm, '宝箱数の基準値': r.base, '宝箱数の範囲(min-max)': r.min + '-' + r.max,
+                    '時間アイテム秒数': timeItemSecFor(sc), 'スピード効果時間(秒)': Math.round(speedBoostSecFor(sc) * 10) / 10,
+                    '森林率+河川率': st ? Math.round(st.forestRiverRatio * 1000) / 1000 : '-', '陸地面積km2': st ? Math.round(st.landAreaKm2) : '-',
+                    'グライダー可否': st ? (st.forestRiverRatio >= CONFIG.GLIDER_MIN_FOREST_RATIO ? '可' : '不可') : '-', '車可否': st ? (st.landAreaKm2 >= CONFIG.CAR_MIN_AREA_KM2 ? '可' : '不可') : '-' });
+      });
+    });
+    console.table(rows);
+  });
 }
-if(new URLSearchParams(window.location.search).get('debug') === 'params') printParamsTable();
+// （?debug=params の呼び出しは items.js の末尾）

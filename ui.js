@@ -18,14 +18,26 @@ function hideAllOverlays(){
 }
 
 // ==== 入力 ====
+// 有効な効果ごとに、残量バーを出す：速度系（スピード👟／車🚗。1スロット）と、グライダー🪂（独立。同時に出せる）
 function updateBoostHud(now){
   const remainMs = state.speedBoostUntil - now;
   if(remainMs > 0){
+    const car = (state.speedKind === 'car');
     boostHud.classList.add('show');
+    boostHud.classList.toggle('car', car);
+    boostIcon.textContent = car ? '🚗' : '👟';
     boostBar.style.width = Math.min(100, remainMs / (state.speedBoostDurationMs || CONFIG.BIKE_DURATION_SEC*1000) * 100) + '%';
     boostSec.textContent = Math.ceil(remainMs/1000) + 's';
   } else {
     boostHud.classList.remove('show');
+  }
+  const gMs = state.gliderUntil - now;
+  if(gMs > 0){
+    gliderHud.classList.add('show');
+    gliderBar.style.width = Math.min(100, gMs / (state.gliderDurationMs || CONFIG.GLIDER_BASE_SEC*1000) * 100) + '%';
+    gliderSec.textContent = Math.ceil(gMs/1000) + 's';
+  } else {
+    gliderHud.classList.remove('show');
   }
 }
 
@@ -64,10 +76,11 @@ function resetMiniFog(){ if(miniMaskCtx) miniMaskCtx.clearRect(0, 0, MINI_SIZE, 
 // ミニマップの解像度（ワールド→ミニマップの縮尺）で直接行う。以前は、巨大なマスクを毎フレーム縮小コピーして作っていた。
 // 描画半径は max(実際の縮尺の半径, CONFIG.MINIMAP_REVEAL_MIN_PX)：大きな県でも探索の跡が見えるようにする。
 // 書き込みは県の外接矩形の内側だけに制限する（余白は常に未探索の霧のまま）。
-function revealMiniFog(wx, wy){
+function revealMiniFog(wx, wy, rWorld){
   if(!miniMaskCtx) return;
-  const mx = miniX(wx), my = miniY(wy); // drawMinimap と同じ変換
-  const r = Math.max(CONFIG.FOG_REVEAL_RADIUS_BASE_PX * CONFIG.ZOOM_FACTOR * miniScale, CONFIG.MINIMAP_REVEAL_MIN_PX);
+  const mx = miniX(wx), my = miniY(wy); // drawMinimap と同じ変換（固定の正方形・縮尺。宝箱地図の円もこの変換に従う）
+  const rw = (rWorld === undefined) ? CONFIG.FOG_REVEAL_RADIUS_BASE_PX * CONFIG.ZOOM_FACTOR : rWorld; // 省略時は通常の視界半径
+  const r = Math.max(rw * miniScale, CONFIG.MINIMAP_REVEAL_MIN_PX);
   miniMaskCtx.save();
   miniMaskCtx.beginPath();
   miniMaskCtx.rect(miniRectX0, miniRectY0, miniRectX1 - miniRectX0, miniRectY1 - miniRectY0);
@@ -227,7 +240,7 @@ function answerQuiz(correct){
     state.timeLeft -= 15;
     quizOverlay.classList.remove('show');
     wrongToast.style.display = 'flex';
-    setTimeout(()=>{
+    pausableTimeout(()=>{ // ポーズ中は進まない（main.js）
       wrongToast.style.display = 'none';
       if(state.timeLeft <= 0){ state.timeLeft = 0; endGame(false); }
       else { state.mode = 'playing'; timerEl.textContent = state.timeLeft; updateHintButtonVisibility(); } // フィールドに戻る
@@ -244,13 +257,13 @@ let hintPanelTimer = null;
 function openHintPanel(text){
   hintPanelText.textContent = text;
   hintPanel.classList.add('show');
-  if(hintPanelTimer) clearTimeout(hintPanelTimer);
-  hintPanelTimer = setTimeout(closeHintPanel, CONFIG.HINT_PANEL_SEC * 1000);
+  if(hintPanelTimer) clearPausableTimeout(hintPanelTimer);
+  hintPanelTimer = pausableTimeout(closeHintPanel, CONFIG.HINT_PANEL_SEC * 1000); // ポーズ中は進まない（main.js）
   refreshHintListButton();
 }
 function closeHintPanel(){
   hintPanel.classList.remove('show');
-  if(hintPanelTimer){ clearTimeout(hintPanelTimer); hintPanelTimer = null; }
+  if(hintPanelTimer){ clearPausableTimeout(hintPanelTimer); hintPanelTimer = null; }
 }
 hintPanel.addEventListener('click', closeHintPanel);
 
@@ -303,6 +316,27 @@ function updateHintButtonVisibility(){
   const visible = state.mode === 'playing';
   hintListBtn.style.display = visible ? '' : 'none';
   if(!visible){ closeHintPanel(); closeHintList(); }
+}
+
+// ==== ポーズボタン（HUD）と再開ボタン ====
+// ポーズの本体は main.js（pauseGame / resumeGame）。ボタンは、ポーズできる時（フィールド・ボス戦＝クイズ中を含む）だけ押せる。
+const pauseBtn = document.getElementById('pauseBtn'), resumeBtn = document.getElementById('resumeBtn');
+let pauseBtnEnabled = null;
+function updatePauseButton(){ // 毎フレーム呼ばれる（loop）。値が変わった時だけ DOM を触る
+  const on = canPause() && !paused;
+  if(on !== pauseBtnEnabled){ pauseBtnEnabled = on; pauseBtn.disabled = !on; pauseBtn.style.visibility = on ? 'visible' : 'hidden'; }
+}
+pauseBtn.addEventListener('click', ()=>{ pauseGame(false); });
+resumeBtn.addEventListener('click', ()=>{ resumeGame(); });
+
+// ==== デバッグ：?debug=map で、宝箱地図を即時に使えるボタン（🗺。キーボードの M でも可）を出す（通常起動では何も出さない） ====
+if(new URLSearchParams(window.location.search).get('debug') === 'map'){
+  const b = document.createElement('button');
+  b.id = 'debugMapBtn'; b.type = 'button'; b.textContent = '🗺 地図を使う（debug）';
+  b.style.cssText = 'position:absolute;right:10px;bottom:10px;z-index:35;padding:6px 10px;font-size:12px;border-radius:8px;border:1px solid #7fd1ff;background:rgba(15,22,32,0.9);color:#fff;';
+  b.addEventListener('click', ()=>{ if(!paused && state && state.mode === 'playing') applyChestItem('map'); });
+  wrap.appendChild(b);
+  window.addEventListener('keydown', e => { if(e.key === 'm' || e.key === 'M'){ if(!paused && state && state.mode === 'playing') applyChestItem('map'); } });
 }
 
 // ==== 難易度の選択画面（起動時と再プレイ時） ====

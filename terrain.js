@@ -108,11 +108,11 @@ function meshCodeFromRowCol(row, col){
 // 展開が終わったら MESH_RUNS_FLAT への参照を切る（nullを代入）ので、他の処理はこの関数の後に MESH_RUNS_FLAT を使ってはいけない。
 // 高速化のため、各区間は「開始コードを1回だけ桁に分解し、あとは +1 を桁上がりつきで進める」方式で展開する
 // （結果は start+k を毎回分解するのと同じ。桁カウンタはローカル変数にして速くしている）。
-function buildLanduseGrid(){
-  landuseGrid = null;
-  const runs = MESH_RUNS_FLAT;
+// 展開の本体（純粋な関数）：ランレングス runs・カテゴリ順 order・セルの大きさから格子を作って返す。ゲームの起動時（buildLanduseGrid）と、
+// ?debug=params／?debug=loot が他県の統計を計算する時（main.js・items.js）で、同じ展開処理を共有する
+function expandLanduseGrid(runs, order, cellLatDeg, cellLonDeg){
   if(!runs || runs.length < 3) throw new Error('土地利用メッシュのデータ（MESH_RUNS_FLAT）が空です');
-  if(LANDUSE_ORDER.length > 254) throw new Error('土地利用カテゴリが多すぎます（254まで）');
+  if(order.length > 254) throw new Error('土地利用カテゴリが多すぎます（254まで）');
   let minRow = Infinity, maxRow = -Infinity, minCol = Infinity, maxCol = -Infinity, invalid = 0, ascending = true;
   let cols = 0, data = null;
   // pass 0：全マスの格子番号の最小・最大を求める（メッシュコードは row/col の単調な関数ではないので、コードの最小・最大ではなく row/col で範囲を決める）
@@ -153,9 +153,44 @@ function buildLanduseGrid(){
     }
   }
   const sw = meshCodeToSWLatLon(meshCodeFromRowCol(minRow, minCol));
-  landuseGrid = { data, cols, rows: maxRow - minRow + 1, row0: minRow, col0: minCol, originLat: sw[0], originLon: sw[1],
-                  cellLatDeg: MESH_CELL_LAT_DEG, cellLonDeg: MESH_CELL_LON_DEG };
+  return { data, cols, rows: maxRow - minRow + 1, row0: minRow, col0: minCol, originLat: sw[0], originLon: sw[1],
+           cellLatDeg: cellLatDeg, cellLonDeg: cellLonDeg };
+}
+// 県の地形の統計（グライダー・車が抽選に入るかの条件に使う）。格子の全セルを1回だけ走査する：
+//   forestRiverRatio ＝ （森林＋河川地及び湖沼のセル数）÷ 通行可能な陸地のセル数（海水域・海浜を除く）
+//   landAreaKm2     ＝ 陸地（海水域を除く）のセル数 × セルの面積。セルの面積は MESH_CELL_LAT_DEG・MESH_CELL_LON_DEG と、その行の緯度（kmPerDegLonAt）から
+function computeLandStats(g, order){
+  const n = order.length, isLand = new Uint8Array(n + 1), isPass = new Uint8Array(n + 1), isFR = new Uint8Array(n + 1);
+  for(let v = 1; v <= n; v++){
+    const code = order[v - 1];
+    isLand[v] = (code !== LANDUSE_SEA) ? 1 : 0;
+    isPass[v] = (code !== LANDUSE_SEA && code !== LANDUSE_BEACH) ? 1 : 0;
+    isFR[v] = (code === LANDUSE_FOREST || code === LANDUSE_RIVER) ? 1 : 0;
+  }
+  const kmLat = g.cellLatDeg * KM_PER_DEG_LAT;
+  let land = 0, pass = 0, fr = 0, area = 0;
+  for(let r = 0; r < g.rows; r++){
+    let rl = 0, rp = 0, rf = 0;
+    const base = r * g.cols;
+    for(let c = 0; c < g.cols; c++){
+      const v = g.data[base + c];
+      if(v === 0) continue;
+      if(isLand[v]) rl++;
+      if(isPass[v]) rp++;
+      if(isFR[v]) rf++;
+    }
+    land += rl; pass += rp; fr += rf;
+    const lat = g.originLat + (r + 0.5) * g.cellLatDeg; // この行の緯度（セルの中心）
+    area += rl * kmLat * (g.cellLonDeg * kmPerDegLonAt(lat));
+  }
+  return { forestRiverRatio: pass > 0 ? fr / pass : 0, landAreaKm2: area, landCells: land, passableLandCells: pass };
+}
+// ゲーム起動時（initTerrain）に1回だけ、MESH_RUNS_FLAT を landuseGrid に展開し、その格子から県の地形の統計（prefLandStats）を1回だけ計算する
+function buildLanduseGrid(){
+  landuseGrid = null;
+  landuseGrid = expandLanduseGrid(MESH_RUNS_FLAT, LANDUSE_ORDER, MESH_CELL_LAT_DEG, MESH_CELL_LON_DEG);
   MESH_RUNS_FLAT = null; // 展開用の元データは不要になったので参照を切る（メモリ解放）
+  prefLandStats = computeLandStats(landuseGrid, LANDUSE_ORDER);
 }
 
 // メッシュコード → 格子の値（0＝データなし）
