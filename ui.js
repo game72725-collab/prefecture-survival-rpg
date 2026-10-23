@@ -175,24 +175,34 @@ function pickNextQuestion(){
 // ✂️50-50：表示順の選択肢から「正解1つ＋不正解からランダムに1つ」だけ残した2択を返す（表示順は保つ）
 function applyFiftyFifty(shown, correctText){
   const wrong = shown.filter(o => o !== correctText);
-  const keepWrong = wrong[Math.floor(gameRandom() * wrong.length)];
+  // デイリー：残す不正解は、生成時に問題ごとに固定してある（プレイ中の乱数・行動で変わらない）
+  const keepWrong = (state.daily && state.daily.quiz && state.currentQuiz && state.daily.quiz.keep[state.currentQuiz.id] !== undefined)
+    ? state.daily.quiz.keep[state.currentQuiz.id] : wrong[Math.floor(gameRandom() * wrong.length)];
   return shown.filter(o => o === correctText || o === keepWrong);
 }
 
+// デイリー：出題の順番は、生成時に固定した順（state.daily.quiz.order）。まだ出していない最初の問題（全部出したら、直前以外の最初の問題）。掲示板を読んだかどうかでは変わらない
+function pickDailyQuestion(){
+  const order = state.daily.quiz.order;
+  let id = order.find(x => !state.askedIds.has(x));
+  if(id === undefined) id = order.find(x => x !== state.lastAskedId);
+  if(id === undefined) id = order[0];
+  return currentKnowledge.find(q => q.id === id) || null;
+}
 function startQuiz(){
   state.mode = 'quiz'; state.quizStep = 0;
   updateHintButtonVisibility(); // ボス戦中はヒントボタン非表示（開いているパネル・一覧も閉じる）
   showQuiz();
 }
 function showQuiz(){
-  const q = pickNextQuestion();
+  const q = (state.daily && state.daily.quiz) ? pickDailyQuestion() : pickNextQuestion();
   if(!q){ console.error('[quiz] 出題できる問題がありません（currentKnowledgeが空）'); return; }
   state.askedIds.add(q.id);
   state.lastAskedId = q.id;
   state.currentQuiz = {
     id: q.id,
     correctText: knowledgeCorrectText(q),      // 正誤判定は「表示順のインデックス」ではなく正解の文字列で行う（main.js）
-    shown: shuffleArray(q.options),             // 出題のたびにFisher-Yatesで並べ替え（元データは書き換えない）
+    shown: (state.daily && state.daily.quiz) ? state.daily.quiz.shown[q.id].slice() : shuffleArray(q.options), // 出題のたびにFisher-Yatesで並べ替え（元データは書き換えない）。デイリーは生成時に固定した並び
     visible: null,                              // 実際に表示している選択肢（50-50で減る）
     fiftyUsed: false
   };
@@ -375,6 +385,19 @@ function buildDifficultyButtons(){
     desc.textContent = (CONFIG.DIFFICULTY_UI && CONFIG.DIFFICULTY_UI[key]) || '';
     item.appendChild(btn); item.appendChild(desc); diffButtonsEl.appendChild(item);
   });
+  // デイリーチャレンジのボタン（?daily=1 で起動し直す。県・難易度・盤面は日付で決まる）。下に「今日のベスト」を出す
+  const ditem = document.createElement('div'); ditem.className = 'diffItem';
+  const dbtn = document.createElement('button');
+  dbtn.type = 'button'; dbtn.id = 'dailyBtn'; dbtn.className = 'diffBtn diff-DAILY'; dbtn.textContent = '📅 デイリーチャレンジ'; dbtn.disabled = true;
+  dbtn.addEventListener('click', ()=>{ window.location.href = window.location.pathname + '?daily=1'; });
+  const ddesc = document.createElement('div'); ddesc.className = 'diffDesc'; ddesc.id = 'dailyDesc';
+  ditem.appendChild(dbtn); ditem.appendChild(ddesc); diffButtonsEl.appendChild(ditem);
+  updateDailyBestText();
+}
+// タイトル画面のボタンの下に、今日（JST）のベストを出す
+function updateDailyBestText(){
+  const el = document.getElementById('dailyDesc'); if(!el) return;
+  el.textContent = dailyBestText(loadDailyRecord(jstDateInt(Date.now()))); // 例：今日のベスト：クリア　残り 77秒（3回挑戦）
 }
 // 読み込み中（true）：「読み込み中…」を出してボタンを押せなくする／選べる状態（false）
 function setDifficultyLoading(loading){
@@ -397,6 +420,7 @@ function showDifficultySelect(onChosen){
   diffPending = onChosen; diffChoosing = false;
   gameOverOverlay.classList.remove('show'); clearOverlay.classList.remove('show'); // 再プレイ時は、終了画面の代わりにこの画面を出す
   highlightLastDifficulty();
+  updateDailyBestText();
   setDifficultyLoading(false);
   difficultyOverlay.classList.add('show');
 }

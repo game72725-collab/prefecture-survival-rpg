@@ -143,6 +143,11 @@
   .diffBtn.last { background: #2b3a4d; box-shadow: 0 0 0 2px var(--dc), 0 0 14px var(--dc); }
   .diffBtn .diffLast { position:absolute; right:10px; top:6px; font-size:11px; letter-spacing:0; padding:1px 7px; border-radius:8px; background: var(--dc); color:#0f1620; }
   .diffDesc { margin-top: 4px; font-size: 12.5px; opacity: 0.78; }
+  /* デイリーチャレンジ：結果画面の表示と、タイトル画面のボタンの色 */
+  .dailyBox { margin: 4px 0 14px; padding: 8px 14px; border: 1px solid #7fd1ff; border-radius: 10px; background: rgba(15,22,32,0.85); font-size: 14px; line-height: 1.7; text-align: center; }
+  .dailyTitle { font-weight: bold; color: #7fd1ff; }
+  .dailyBest { opacity: 0.9; }
+  .diff-DAILY { --dc:#7fd1ff; }
   .diff-EASY { --dc:#5ecb63; } .diff-NORMAL { --dc:#ffd93d; } .diff-HARD { --dc:#ff9f43; } .diff-VERYHARD { --dc:#ff5a5a; }
   #quizBox { width:100%; max-width: 380px; }
   #quizBox h2 { font-size: 19px; margin-bottom: 18px; }
@@ -200,11 +205,13 @@
     <div id="gameOverOverlay" class="overlay">
       <h1>GAME OVER</h1>
       <p>時間切れです。もう一度挑戦しますか？</p>
+      <div id="dailyBoxOver" class="dailyBox" style="display:none"><div class="dailyTitle"></div><div class="dailyThis"></div><div class="dailyBest"></div></div>
       <button class="bigbtn" onclick="resetGame()">もう一度プレイ</button>
     </div>
     <div id="clearOverlay" class="overlay">
       <h1>STAGE CLEAR!</h1>
       <p>県庁クイズに正解しました。</p>
+      <div id="dailyBoxClear" class="dailyBox" style="display:none"><div class="dailyTitle"></div><div class="dailyThis"></div><div class="dailyBest"></div></div>
       <button class="bigbtn" onclick="resetGame()">もう一度プレイ</button>
     </div>
     <div id="wrongToast" class="overlay" style="background:rgba(255,90,90,0.9); display:none;">

@@ -131,6 +131,10 @@ const CONFIG = {
   PLACE_TRIES: 300,          // 1点あたりの試行回数（間隔を緩める段階ごと）
   // ---- 難易度の選択画面 ----
   SHOW_DIFFICULTY_SELECT: true, // false なら、起動時・再プレイ時の選択画面を出さず、?diff= または DIFFICULTY_DEFAULT で開始する（URL に ?diff= がある時も出さない）
+  // ---- デイリーチャレンジ（?daily=1／タイトル画面のボタン。?pref=・?diff=・?scatter= と一緒でも ?daily=1 が優先） ----
+  DAILY_TZ_OFFSET_HOURS: 9,  // 日付は日本時間(JST=UTC+9)。端末のタイムゾーン設定に依存しない（UTC時刻にこの時間を足して日付を出す）。根拠：全員が同じ日に同じ盤面を遊べるように
+  DAILY_SALT: 'daily-v1',    // 日付から seed・県・難易度を作るハッシュの塩。根拠：盤面の生成方法を変えた時にこの値を変えると、全員が新しい盤面になる（古い記録は日付ごとなので残る）
+  DAILY_STORAGE_PREFIX: 'prefSurvival.daily.', // 日付ごとの結果（クリア可否・残り秒数）の localStorage キーの接頭辞（使えなくても動く）
   DIFFICULTY_STORAGE_KEY: 'prefSurvival.lastDifficulty', // 前回選んだ難易度の保存先（localStorage。使えなくても動く）
   DIFFICULTY_UI: {           // 選択画面のひと言（数値は出さない）
     EASY:     '県庁が近い・宝箱が多い',
@@ -179,9 +183,82 @@ function debugLog(){ if(CONFIG.DEBUG) console.log.apply(console, arguments); }
 let gameRandom = () => Math.random();
 function setGameRandom(fn){ gameRandom = (typeof fn === 'function') ? fn : (() => Math.random()); }
 
+// ==== デイリーチャレンジ：日付（JST）→ seed・県・難易度。同じ日は、誰がやっても同じ盤面になる ====
+// 盤面の生成（スポーン・掲示板・宝箱の位置・宝箱の数と中身・クイズ）は、日付から作る「生成用のストリーム」だけで行い、プレイ中の抽選（gameRandom）とは別にする。
+// 生成用は用途ごとに独立したストリーム（spawn／place／loot／quiz）にしてあるので、ある用途の乱数の消費量（例：配置のやり直し回数）が他に影響しない。
+// プレイ用（play）は、プレイヤーの行動で消費量が変わるが、盤面（生成）には影響しない。
+function hash32(str){ // FNV-1a（32bit）。環境によらず同じ値になる
+  let h = 0x811c9dc5;
+  for(let i = 0; i < str.length; i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193); }
+  return h >>> 0;
+}
+function mulberry32(seed){ // seed 付きの乱数（0以上1未満）
+  let a = seed >>> 0;
+  return function(){ a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+// 日本時間の日付 YYYYMMDD（整数）。UTC の時刻に +9時間してから、UTC の年月日として読む（端末のタイムゾーンを使わない）
+function jstDateInt(nowMs){
+  const d = new Date(nowMs + CONFIG.DAILY_TZ_OFFSET_HOURS * 3600 * 1000);
+  return d.getUTCFullYear() * 10000 + (d.getUTCMonth() + 1) * 100 + d.getUTCDate();
+}
+function dateLabel(date){ const s = String(date); return s.slice(0, 4) + '/' + s.slice(4, 6) + '/' + s.slice(6, 8); }
+// ?date=YYYYMMDD（検証用）：?debug が付いている時だけ有効。無効・不正な値は無視して今日（JST）
+function dailyDateFromUrl(params){
+  const d = params.get('date');
+  if(d !== null && params.has('debug') && /^\d{8}$/.test(d)){
+    const y = Number(d.slice(0, 4)), mo = Number(d.slice(4, 6)), da = Number(d.slice(6, 8));
+    if(y >= 2000 && mo >= 1 && mo <= 12 && da >= 1 && da <= 31) return Number(d);
+  }
+  return jstDateInt(Date.now());
+}
+// その日の盤面の元：県（利用可能な県のコード順リストから、日付のハッシュで選ぶ）・難易度（日付のハッシュで選ぶ）
+function computeDailyPlan(date, availableCodes){
+  const codes = (availableCodes || []).filter(c => Number.isInteger(c)).sort((a, b) => a - b);
+  const keys = Object.keys(CONFIG.DIFFICULTY);
+  const base = CONFIG.DAILY_SALT + ':' + date + ':';
+  return { date: date, pref: codes.length ? codes[hash32(base + 'pref') % codes.length] : null, codes: codes,
+           diffKey: keys[hash32(base + 'diff') % keys.length] };
+}
+function dailyStream(plan, name){ return mulberry32(hash32(CONFIG.DAILY_SALT + ':' + plan.date + ':' + name)); } // 用途ごとの独立したストリーム
+function dailyAvailableCodes(){ return (typeof AVAILABLE_PREFECTURE_CODES !== 'undefined' && Array.isArray(AVAILABLE_PREFECTURE_CODES)) ? AVAILABLE_PREFECTURE_CODES : []; }
+const dailyParams = new URLSearchParams(window.location.search);
+// ?daily=1 のとき、その日の盤面の元（なければ null＝通常プレイ）。起動中は固定（日付をまたいで遊んでも、起動した日の盤面）
+const dailyPlan = (dailyParams.get('daily') === '1') ? computeDailyPlan(dailyDateFromUrl(dailyParams), dailyAvailableCodes()) : null;
+
+// ---- 日付ごとの結果（localStorage。使えなくても動く＝そのページを開いている間だけメモリに持つ） ----
+const dailyMemRecords = {};
+function loadDailyRecord(date){
+  try{
+    const v = window.localStorage.getItem(CONFIG.DAILY_STORAGE_PREFIX + date);
+    if(v){ const r = JSON.parse(v); if(r && r.best && typeof r.best.clear === 'boolean') return r; }
+  }catch(e){ /* 使えない・壊れた値は無視 */ }
+  return dailyMemRecords[date] || null;
+}
+function saveDailyRecord(date, rec){
+  dailyMemRecords[date] = rec;
+  try{ window.localStorage.setItem(CONFIG.DAILY_STORAGE_PREFIX + date, JSON.stringify(rec)); }catch(e){ /* 保存できなくても続行 */ }
+}
+// 今日のベスト：クリアした方が上。クリア同士なら残り秒数が大きい方が上。何度でも再挑戦できる
+function recordDailyResult(date, clear, remainSec){
+  const prev = loadDailyRecord(date);
+  const cur = { clear: !!clear, remain: clear ? Math.max(0, Math.round(remainSec)) : 0 };
+  const better = !prev || (cur.clear && !prev.best.clear) || (cur.clear && prev.best.clear && cur.remain > prev.best.remain);
+  const rec = { best: better ? cur : prev.best, last: cur, tries: (prev ? prev.tries : 0) + 1 };
+  saveDailyRecord(date, rec);
+  return rec;
+}
+function dailyBestText(rec){
+  if(!rec) return '今日はまだ挑戦していません';
+  return '今日のベスト：' + (rec.best.clear ? 'クリア　残り ' + rec.best.remain + '秒' : '未クリア') + '（' + rec.tries + '回挑戦）';
+}
+
 // ==== 難易度と配置モードの決定（優先順位：URLパラメータ → CONFIG。不正な値は無視して console.warn） ====
 //   ?diff=easy|normal|hard|veryhard、?scatter=prefecture|reachable（大文字小文字は区別しない）。画面には出さない。
 function resolveGameSettings(search){
+  if(dailyPlan){ // デイリー：難易度は日付で決まり、配置モードは CONFIG の値に固定（?diff=・?scatter= は無視。全員が同じ盤面になるように）
+    const m = String(CONFIG.ITEM_SCATTER_MODE).toLowerCase();
+    return { difficultyKey: dailyPlan.diffKey, difficulty: CONFIG.DIFFICULTY[dailyPlan.diffKey], scatterMode: (m === 'prefecture' || m === 'reachable') ? m : 'reachable' };
+  }
   const params = new URLSearchParams(search || '');
   const diffs = CONFIG.DIFFICULTY;
   let key = String(CONFIG.DIFFICULTY_DEFAULT).toUpperCase();
@@ -211,6 +288,7 @@ function resolveGameSettings(search){
 let gameSettings = resolveGameSettings(window.location.search);
 // 難易度の選択画面を出すか：CONFIG.SHOW_DIFFICULTY_SELECT が false、または URL に ?diff= がある時（値が不正でも）は出さない
 function needsDifficultySelect(search){
+  if(dailyPlan) return false; // デイリーは難易度が日付で決まるので、選択画面を出さない
   if(CONFIG.SHOW_DIFFICULTY_SELECT === false) return false;
   return !new URLSearchParams(search || '').has('diff');
 }
@@ -457,10 +535,10 @@ const CHEST_OPEN_ANIM_MS = CHEST_OPEN_FRAME_MS * 9; // 9コマ分
 let state = {};
 
 // Fisher-Yatesシャッフル。元の配列は書き換えず、シャッフル済みの新しい配列を返す
-function shuffleArray(arr){
+function shuffleArray(arr, rnd){ // rnd：乱数関数（省略時は gameRandom。デイリーの盤面生成は生成用ストリームを渡す）
   const a = arr.slice();
   for(let i = a.length - 1; i > 0; i--){
-    const j = Math.floor(gameRandom() * (i + 1));
+    const j = Math.floor((rnd ? rnd() : gameRandom()) * (i + 1));
     const t = a[i]; a[i] = a[j]; a[j] = t;
   }
   return a;
@@ -531,7 +609,8 @@ function isValidSpawnPoint(lat, lon){
 // スポーン：県庁から距離 d（[lo,hi] の一様乱数）・方位（一様乱数）の地点。
 //   lo = max(SPAWN_MIN_KM, min(pctLo×R, spawnMaxKm×0.6))、hi = max(lo+1, min(pctHi×R, spawnMaxKm))
 //   見つからなければ、範囲を段階的に広げて（lo×0.7、hi×1.15、最大4段階）再試行。それでも無ければ、範囲に最も近い候補（console.warnのみ）。
-function chooseSpawn(R, diff){
+function chooseSpawn(R, diff, rnd){
+  const rand = rnd || (() => gameRandom()); // 省略時は従来どおり gameRandom（通常プレイの乱数の順序は変えない）
   const lo0 = Math.max(CONFIG.SPAWN_MIN_KM, Math.min(diff.spawnPct[0] * R, diff.spawnMaxKm * 0.6));
   const hi0 = Math.max(lo0 + 1, Math.min(diff.spawnPct[1] * R, diff.spawnMaxKm));
   const make = (p, stage, relaxed) => ({ lat: p.lat, lon: p.lon, distKm: kmBetween(CAPITAL.lat, CAPITAL.lon, p.lat, p.lon),
@@ -540,8 +619,8 @@ function chooseSpawn(R, diff){
   for(let stage = 0; stage <= 4; stage++){
     const lo = lo0 * Math.pow(0.7, stage), hi = hi0 * Math.pow(1.15, stage);
     for(let t = 0; t < CONFIG.SPAWN_TRIES; t++){
-      const d = lo + gameRandom() * (hi - lo);
-      const a = gameRandom() * Math.PI * 2;
+      const d = lo + rand() * (hi - lo);
+      const a = rand() * Math.PI * 2;
       const p = destLatLon(CAPITAL.lat, CAPITAL.lon, d, a);
       if(isValidSpawnPoint(p.lat, p.lon)) return make(p, stage, false);
       if(!isInsidePrefecture(p.lat, p.lon)) continue;
@@ -567,6 +646,18 @@ function computeChestCount(diff){
   const v = r.nominal * (1 + (gameRandom() * 2 - 1) * CONFIG.CHEST_RANDOM_RANGE);
   return Math.max(CONFIG.CHEST_MIN, Math.min(CONFIG.CHEST_MAX, Math.round(v)));
 }
+// デイリーの宝箱数：ランダム幅（CHEST_RANDOM_RANGE）を適用せず、基準値（round(spawnMaxKm÷KM_PER_CHEST) × chestCountMul）を四捨五入して CHEST_MIN〜CHEST_MAX に収めた値に固定
+function dailyChestCount(diff){
+  const r = chestCountRange(diff);
+  return Math.max(CONFIG.CHEST_MIN, Math.min(CONFIG.CHEST_MAX, Math.round(r.nominal)));
+}
+// デイリーの宝箱の中身：生成時に、宝箱の番号順（1番目から）で事前に決める。上限（ITEM_MAX_PER_RUN）と県の条件による除外（itemAvailable）は、この決定時に適用する。
+// 取得した順では変わらない。stats＝その県の地形の統計（ゲーム内は prefLandStats、?debug=daily は fetch した値で、同じ値）
+function buildDailyLoot(n, rnd, stats){
+  const counts = {}, list = [];
+  for(let i = 0; i < n; i++){ const it = pickChestItem(counts, null, stats, rnd); counts[it] = (counts[it] || 0) + 1; list.push(it); }
+  return list;
+}
 // アイテム効果のスケール：clamp(spawnMaxKm ÷ ITEM_REF_KM, 1, ITEM_SCALE_MAX)
 function itemScaleFor(diff){ return Math.max(1, Math.min(CONFIG.ITEM_SCALE_MAX, diff.spawnMaxKm / CONFIG.ITEM_REF_KM)); }
 function timeItemSecFor(scale){ return Math.round(CONFIG.TIME_ITEM_BASE_SEC * scale); }          // 時間アイテムの秒数（整数）
@@ -579,7 +670,8 @@ function carSecFor(scale){ return CONFIG.CAR_BASE_SEC * scale; }                
 //   モードB 'reachable' ：スポーン中心・半径 spawnMaxKm×ITEM_REACH_FACTOR の円から面積に比例して（r=半径×√u）点を取り、同じ条件で採用
 //   共通条件：県内／置ける地形／スポーン・県庁からの最小距離／既存の点との最小間隔。
 //   1点あたり PLACE_TRIES 回で見つからなければ、最小間隔を0.8倍にして再試行（最大5回）。それでも置けなければ置ける数で続行（console.warnのみ）。
-function placeBoardsAndChests(spawn, diff, mode, rollItem){
+function placeBoardsAndChests(spawn, diff, mode, rollItem, rnd, fixedChestN){
+  const rand = rnd || (() => gameRandom()); // 省略時は従来どおり gameRandom（通常プレイの乱数の順序は変えない）。rollItem(i)：i番目の宝箱の中身
   let lonMin_ = Infinity, lonMax_ = -Infinity, latMin_ = Infinity, latMax_ = -Infinity;
   PREFECTURE_RING.forEach(([lon, lat])=>{
     if(lon < lonMin_) lonMin_ = lon; if(lon > lonMax_) lonMax_ = lon;
@@ -587,8 +679,8 @@ function placeBoardsAndChests(spawn, diff, mode, rollItem){
   });
   const reachKm = diff.spawnMaxKm * CONFIG.ITEM_REACH_FACTOR;
   const sample = (mode === 'reachable')
-    ? () => { const r = reachKm * Math.sqrt(gameRandom()); const a = gameRandom() * Math.PI * 2; return destLatLon(spawn.lat, spawn.lon, r, a); }
-    : () => ({ lat: latMin_ + gameRandom() * (latMax_ - latMin_), lon: lonMin_ + gameRandom() * (lonMax_ - lonMin_) });
+    ? () => { const r = reachKm * Math.sqrt(rand()); const a = rand() * Math.PI * 2; return destLatLon(spawn.lat, spawn.lon, r, a); }
+    : () => ({ lat: latMin_ + rand() * (latMax_ - latMin_), lon: lonMin_ + rand() * (lonMax_ - lonMin_) });
   const placed = [];
   const stats = { boardsWanted: 0, boardsPlaced: 0, chestsWanted: 0, chestsPlaced: 0, relaxed: 0, failed: 0 };
   function placeOne(){
@@ -613,33 +705,52 @@ function placeBoardsAndChests(spawn, diff, mode, rollItem){
   const n = Math.min(CONFIG.HINT_BOARD_COUNT, currentKnowledge.length);
   stats.boardsWanted = n;
   const boards = [];
-  shuffleArray(currentKnowledge).slice(0, n).forEach(q=>{ // 1問に1枚、重複なし
+  shuffleArray(currentKnowledge, rnd).slice(0, n).forEach(q=>{ // 1問に1枚、重複なし
     const p = placeOne();
     if(p) boards.push({ lat: p.lat, lon: p.lon, questionId: q.id, state: 'active' });
   });
   stats.boardsPlaced = boards.length;
-  const chestN = computeChestCount(diff); // 掲示板を置いた後に決める（掲示板の配置の乱数列を変えない）
+  const chestN = (fixedChestN !== undefined) ? fixedChestN : computeChestCount(diff); // 掲示板を置いた後に決める（掲示板の配置の乱数列を変えない）。デイリーは固定の数
   stats.chestsWanted = chestN;
   const chests = [];
   for(let i = 0; i < chestN; i++){
     const p = placeOne();
-    if(p) chests.push({ lat: p.lat, lon: p.lon, item: rollItem(), state: 'closed', openStart: 0 });
+    if(p) chests.push({ lat: p.lat, lon: p.lon, item: rollItem(i), state: 'closed', openStart: 0 });
   }
   stats.chestsPlaced = chests.length;
   if(stats.failed > 0) console.warn('[place] 置けなかった点が ' + stats.failed + ' 個あります（掲示板 ' + boards.length + '/' + n + '、宝箱 ' + chests.length + '/' + chestN + '）');
   return { boards: boards, chests: chests, stats: stats };
 }
 
+// デイリーのクイズ：出題の順番（掲示板の問題を置いた順 → 残りの問題）と、各問題の選択肢の並び・50-50で残す不正解を、生成時に固定する（プレイ中の行動で変わらない）。
+// ヒント掲示板の問題が先頭に来るので、掲示板を探して読めば、ボス戦で出る問題のヒントが手に入る
+function buildDailyQuiz(boards, rnd){
+  const boardIds = boards.map(b => b.questionId);
+  const rest = shuffleArray(currentKnowledge.filter(q => boardIds.indexOf(q.id) < 0), rnd).map(q => q.id);
+  const order = boardIds.concat(rest), shown = {}, keep = {};
+  order.forEach(id => {
+    const q = currentKnowledge.find(x => x.id === id);
+    shown[id] = shuffleArray(q.options, rnd);
+    const wrong = shown[id].filter(o => o !== knowledgeCorrectText(q));
+    keep[id] = wrong[Math.floor(rnd() * wrong.length)];
+  });
+  return { order: order, shown: shown, keep: keep };
+}
 // 宝箱の中身：'time'（+10秒）／'speed'（スピードアップ）／'fifty'（✂️50-50）／'compass'（🧭県庁サーチ）。抽選は items.js の pickChestItem()。
 function initGame(){
   resize();
   resetFogTiles(); // 探索状態を初期化（霧タイルをすべて破棄。前のランの探索は引き継がない）
 
   const diff = gameSettings.difficulty;
+  // デイリー：盤面の生成は、その日の seed から作る生成用ストリーム（spawn／place／loot／quiz）だけで行う。プレイ中の抽選（gameRandom）は別のストリーム（play）。
+  // ラン（再挑戦）のたびに、全部 seed から作り直すので、何度やっても同じ盤面・同じ乱数になる
+  const dly = dailyPlan ? { spawn: dailyStream(dailyPlan, 'spawn'), place: dailyStream(dailyPlan, 'place'), loot: dailyStream(dailyPlan, 'loot'),
+                            quiz: dailyStream(dailyPlan, 'quiz'), play: dailyStream(dailyPlan, 'play') } : null;
+  if(dly) setGameRandom(dly.play);
 
   // ① スポーン地点：県の大きさ R に対する割合と難易度で決める（chooseSpawn）。R は起動のたびに計算する
   const R = computePrefectureRadiusKm();
-  const spawn = chooseSpawn(R, diff);
+  const spawn = chooseSpawn(R, diff, dly ? dly.spawn : undefined);
 
   state = {
     player: { lat: spawn.lat, lon: spawn.lon },
@@ -661,7 +772,8 @@ function initGame(){
     lastAskedId: null,      // 直前に出題した問題ID
     currentQuiz: null,      // 出題中の問題（シャッフル後の選択肢・正解文字列など）
     fiftyFiftyStock: 0,     // ✂️50-50の所持数（ラン開始で0にリセット）
-    compassActive: false    // 🧭県庁サーチが発動済みか（ラン開始で未発動にリセット）
+    compassActive: false,   // 🧭県庁サーチが発動済みか（ラン開始で未発動にリセット）
+    daily: dailyPlan ? { date: dailyPlan.date, quiz: null } : null // デイリーの情報（通常プレイは null）。quiz：その日に固定した出題順・選択肢の並び
   };
   timerEl.textContent = state.timeLeft;
 
@@ -675,7 +787,17 @@ function initGame(){
   };
 
   // ② 掲示板（20個・1問1枚）と宝箱（難易度の個数）を、まとめて配置（掲示板が先）
-  const placed = placeBoardsAndChests(spawn, diff, gameSettings.scatterMode, rollChestItem);
+  let placed;
+  if(dly){
+    // デイリー：宝箱数は基準値に固定。中身は、宝箱の番号順に事前に決める（上限・県の条件による除外は、この決定時に適用）
+    const chestN = dailyChestCount(diff);
+    const lootList = buildDailyLoot(chestN, dly.loot, prefLandStats);
+    state.itemCounts = {}; lootList.forEach(it => { state.itemCounts[it] = (state.itemCounts[it] || 0) + 1; });
+    placed = placeBoardsAndChests(spawn, diff, gameSettings.scatterMode, (i) => lootList[i], dly.place, chestN);
+    state.daily.quiz = buildDailyQuiz(placed.boards, dly.quiz);
+  } else {
+    placed = placeBoardsAndChests(spawn, diff, gameSettings.scatterMode, rollChestItem);
+  }
   state.hintBoards = placed.boards;
   state.chests = placed.chests;
   state.placeInfo = placed.stats;
@@ -834,8 +956,9 @@ function update(dtSec, rawMs){
       chestCountEl.textContent = opened;
       // 🧭が出たが既に発動済みなら、別のアイテムに引き直す
       // 🗺が出たが、取れる（未取得の）宝箱がもう無いなら、別のアイテムに引き直す
-      if(c.item === 'map' && !itemAvailable('map')){ state.itemCounts.map = Math.max(0, (state.itemCounts.map || 1) - 1); c.item = pickChestItem(state.itemCounts, ['map']); state.itemCounts[c.item] = (state.itemCounts[c.item] || 0) + 1; }
-      if(c.item === 'compass' && state.compassActive){ state.itemCounts.compass = Math.max(0, (state.itemCounts.compass || 1) - 1); c.item = pickChestItem(state.itemCounts, ['compass']); state.itemCounts[c.item] = (state.itemCounts[c.item] || 0) + 1; }
+      // （デイリーは中身が生成時に決まっているので、取得順で変えない＝この2つの引き直しは通常プレイだけ）
+      if(!state.daily && c.item === 'map' && !itemAvailable('map')){ state.itemCounts.map = Math.max(0, (state.itemCounts.map || 1) - 1); c.item = pickChestItem(state.itemCounts, ['map']); state.itemCounts[c.item] = (state.itemCounts[c.item] || 0) + 1; }
+      if(!state.daily && c.item === 'compass' && state.compassActive){ state.itemCounts.compass = Math.max(0, (state.itemCounts.compass || 1) - 1); c.item = pickChestItem(state.itemCounts, ['compass']); state.itemCounts[c.item] = (state.itemCounts[c.item] || 0) + 1; }
       applyChestItem(c.item); // items.js：time / speed / fifty / compass の効果とメッセージ
     }
   });
@@ -1105,13 +1228,29 @@ function endGame(won){
   if(paused){ pendingEnd = won; return; } // ポーズ中は結果画面を出さない（再開した時に反映する）
   state.mode = won ? 'clear' : 'gameover';
   updateHintButtonVisibility(); // ui.js：フィールドで遊んでいる間（playing）だけヒントボタンを表示
+  showDailyResult(won);         // デイリー：今回の結果を localStorage に記録し、結果画面に「今日のチャレンジ」と日付・今日のベストを出す
   if(won) clearOverlay.classList.add('show'); else gameOverOverlay.classList.add('show');
+}
+// 結果画面のデイリー表示（通常プレイでは非表示）。クリアの残り秒数は、残り時間を切り上げた整数
+function showDailyResult(won){
+  const boxes = [document.getElementById('dailyBoxClear'), document.getElementById('dailyBoxOver')];
+  if(!state.daily){ boxes.forEach(b => { if(b) b.style.display = 'none'; }); return; }
+  const remain = won ? Math.max(0, Math.ceil(state.timeLeft)) : 0;
+  const rec = recordDailyResult(state.daily.date, won, remain);
+  boxes.forEach(b => {
+    if(!b) return;
+    b.style.display = 'block';
+    b.querySelector('.dailyTitle').textContent = '📅 今日のチャレンジ　' + dateLabel(state.daily.date);
+    b.querySelector('.dailyThis').textContent = '今回：' + (won ? 'クリア　残り ' + remain + '秒' : '未クリア');
+    b.querySelector('.dailyBest').textContent = dailyBestText(rec);
+  });
 }
 
 // 再プレイ：難易度の選択画面を出す設定なら、選択画面に戻る（県は変えない）。選ばれたら、新しいスポーン位置の画面内のタイルを先に焼いて開始。
 // 出さない設定（?diff=指定／SHOW_DIFFICULTY_SELECT=false）なら、従来どおり同じ難易度ですぐ再開する
 window.resetGame = function(){
   const restart = ()=>{ initGame(); prebakeTerrainAtPlayer(0); };
+  if(dailyPlan){ restart(); return; } // デイリー：同じ盤面ですぐ再挑戦（何度でも。seed から作り直すので同じ盤面・同じ乱数）
   if(difficultySelectEnabled) showDifficultySelect(restart); // ui.js
   else restart();
 };
@@ -1174,6 +1313,13 @@ function pickPrefectureCode(excluded){
     ? AVAILABLE_PREFECTURE_CODES.filter(c => Number.isInteger(c)) : [];
   const candidates = all.filter(c => !excluded.includes(c));
   if(candidates.length === 0) return null;
+
+  // ⓪ デイリー：県は日付のハッシュで決まる（?pref= や CONFIG の指定より優先）。決まった県が読めなかった時は、残りの県（コード順）から日付のハッシュで選び直す
+  if(dailyPlan){
+    const ordered = candidates.slice().sort((a, b) => a - b);
+    if(ordered.includes(dailyPlan.pref)) return dailyPlan.pref;
+    return ordered[hash32(CONFIG.DAILY_SALT + ':' + dailyPlan.date + ':pref') % ordered.length];
+  }
 
   // ① URLパラメータ
   const param = new URLSearchParams(window.location.search).get('pref');
@@ -1291,3 +1437,17 @@ function printParamsTable(){
   });
 }
 // （?debug=params の呼び出しは items.js の末尾）
+
+// ==== デバッグ：?debug=daily で、指定日（?date=YYYYMMDD。省略時は今日のJST）のデイリーの県・難易度・宝箱数・各宝箱の中身を console.table で出す（通常起動では何も出さない） ====
+// ゲーム内と同じ関数（computeDailyPlan・dailyChestCount・buildDailyLoot・生成用ストリーム loot）で求めるので、同じ日はゲーム内の宝箱の中身（番号順）と一致する。呼び出しは items.js の末尾
+function printDailyTable(){
+  const date = dailyDateFromUrl(dailyParams);
+  const plan = computeDailyPlan(date, dailyAvailableCodes());
+  if(plan.pref === null){ console.warn('[daily] 利用できる県がありません'); return Promise.resolve(); }
+  return fetchPrefLandStats(plan.pref).then(stats => {
+    const diff = CONFIG.DIFFICULTY[plan.diffKey], n = dailyChestCount(diff);
+    const loot = buildDailyLoot(n, dailyStream(plan, 'loot'), stats);
+    const rows = loot.map((it, i) => ({ '日付': date, '県コード': plan.pref, '難易度': plan.diffKey, '宝箱数': n, '宝箱番号': i + 1, '中身': it }));
+    console.table(rows);
+  });
+}

@@ -18,7 +18,7 @@ function itemAvailable(key, stats){
 // 宝箱の中身の抽選（重み付き。CONFIG.CHEST_ITEM_WEIGHTS）。counts＝そのランで既に決めた数（種類ごと）。
 // 県の条件を満たさない種類（itemAvailable）、上限（CONFIG.ITEM_MAX_PER_RUN）に達した種類、excludeKeys を候補から外し、残りの重みの合計で再正規化して抽選する（gameRandom）。
 // 候補が空なら、保険として 'time' を返す。stats は ?debug=loot が他県で試す時に渡す（通常は省略）
-function pickChestItem(counts, excludeKeys, stats){
+function pickChestItem(counts, excludeKeys, stats, rnd){ // rnd：乱数関数（省略時は gameRandom。デイリーの中身の事前決定は生成用ストリームを渡す）
   if(CONFIG.DEBUG_FORCE_ITEM) return CONFIG.DEBUG_FORCE_ITEM;
   const caps = CONFIG.ITEM_MAX_PER_RUN || {}, cnt = counts || {};
   const pool = Object.keys(CONFIG.CHEST_ITEM_WEIGHTS).filter(k => {
@@ -30,7 +30,7 @@ function pickChestItem(counts, excludeKeys, stats){
   if(pool.length === 0) return 'time';
   let total = 0;
   pool.forEach(k => { total += CONFIG.CHEST_ITEM_WEIGHTS[k]; });
-  let r = gameRandom() * total;
+  let r = (rnd ? rnd() : gameRandom()) * total;
   for(const k of pool){
     r -= CONFIG.CHEST_ITEM_WEIGHTS[k];
     if(r < 0) return k;
@@ -235,4 +235,5 @@ function printLootTable(){
   const dbg = new URLSearchParams(window.location.search).get('debug');
   if(dbg === 'params') printParamsTable();
   else if(dbg === 'loot') printLootTable();
+  else if(dbg === 'daily') printDailyTable();
 })();
